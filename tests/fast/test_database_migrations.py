@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from personal_voice_msg.database import Database, MigrationError
+from personal_voice_msg.normalization import normalized_hash
 
 EXPECTED_TABLES = {
     "schema_migrations",
@@ -24,6 +25,14 @@ def read_table_names(path: Path) -> set[str]:
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ).fetchall()
     return {str(row[0]) for row in rows}
+
+
+def downgrade_current_database_to_v2(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "DROP INDEX IF EXISTS message_history_normalized_hash_unique_idx"
+        )
+        connection.execute("DELETE FROM schema_migrations WHERE version = 3")
 
 
 @pytest.mark.fast
@@ -48,7 +57,7 @@ def test_rerunning_migration_is_idempotent(tmp_path: Path) -> None:
         versions = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-    assert versions == [(1,), (2,)]
+    assert versions == [(1,), (2,), (3,)]
 
 
 @pytest.mark.fast
@@ -78,7 +87,7 @@ def test_newer_migration_version_fails_without_altering_database(
         )
         connection.execute(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-            (3, "future-version"),
+            (4, "future-version"),
         )
         connection.execute(
             "CREATE TABLE newer_schema_sentinel (value TEXT NOT NULL)"
@@ -334,3 +343,81 @@ def test_new_database_instance_preserves_schema_and_data(tmp_path: Path) -> None
 
     assert row == ("preserved",)
     assert EXPECTED_TABLES <= tables
+
+
+@pytest.mark.fast
+def test_version_two_database_upgrades_to_unique_normalized_hashes(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "version-two.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    downgrade_current_database_to_v2(database_path)
+
+    database.migrate()
+
+    with sqlite3.connect(database_path) as connection:
+        versions = connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        indexes = connection.execute(
+            "PRAGMA index_list(message_history)"
+        ).fetchall()
+    assert versions == [(1,), (2,), (3,)]
+    assert any(
+        row[1] == "message_history_normalized_hash_unique_idx" and row[2] == 1
+        for row in indexes
+    )
+
+
+@pytest.mark.fast
+def test_version_three_migration_fails_closed_on_existing_exact_duplicates(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "duplicate-version-two.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    downgrade_current_database_to_v2(database_path)
+    duplicate_hash = normalized_hash("Your smile makes every morning brighter.")
+    connection = database.connect()
+    try:
+        for text in ("First stored sentence.", "Second stored sentence."):
+            cursor = connection.execute(
+                """
+                INSERT INTO messages (text, state, created_at, updated_at)
+                VALUES (?, 'discovered', '2026-07-19T12:00:00+00:00',
+                        '2026-07-19T12:00:00+00:00')
+                """,
+                (text,),
+            )
+            assert cursor.lastrowid is not None
+            connection.execute(
+                """
+                INSERT INTO message_history (message_id, normalized_hash)
+                VALUES (?, ?)
+                """,
+                (int(cursor.lastrowid), duplicate_hash),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(MigrationError, match="duplicate"):
+        database.migrate()
+
+    with sqlite3.connect(database_path) as connection:
+        versions = connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        history_rows = connection.execute(
+            "SELECT message_id, normalized_hash FROM message_history "
+            "ORDER BY message_id"
+        ).fetchall()
+        indexes = connection.execute(
+            "PRAGMA index_list(message_history)"
+        ).fetchall()
+    assert versions == [(1,), (2,)]
+    assert history_rows == [(1, duplicate_hash), (2, duplicate_hash)]
+    assert not any(
+        row[1] == "message_history_normalized_hash_unique_idx" for row in indexes
+    )

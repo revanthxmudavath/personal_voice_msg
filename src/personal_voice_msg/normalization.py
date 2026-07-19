@@ -10,7 +10,9 @@ def normalize_text(text: str) -> str:
     comparable_characters: list[str] = []
     for character in compatible:
         category = unicodedata.category(character)
-        if category == "Cf":
+        if category.startswith("C"):
+            if character.isspace():
+                comparable_characters.append(" ")
             continue
         comparable_characters.append(" " if category.startswith("P") else character)
     without_punctuation = "".join(comparable_characters)

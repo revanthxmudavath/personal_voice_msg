@@ -18,6 +18,13 @@ def create_history(path: Path) -> MessageHistory:
     return MessageHistory(database)
 
 
+def record_message(history: MessageHistory, text: str) -> int:
+    decision = history.evaluate_and_record(text, NOW)
+    assert decision.accepted
+    assert decision.recorded_message_id is not None
+    return decision.recorded_message_id
+
+
 def create_v1_database(path: Path, text: str) -> int:
     states = (
         "'discovered', 'validated', 'approved', 'queued', 'reserved', "
@@ -118,7 +125,7 @@ def test_exact_normalized_variants_are_rejected(
     tmp_path: Path, variant: str
 ) -> None:
     history = create_history(tmp_path / "history.sqlite3")
-    message_id = history.record("Your smile makes every morning brighter", NOW)
+    message_id = record_message(history, "Your smile makes every morning brighter")
 
     decision = history.evaluate(variant)
 
@@ -155,7 +162,7 @@ def test_curated_near_duplicate_paraphrases_are_rejected(
     tmp_path: Path, existing: str, candidate: str
 ) -> None:
     history = create_history(tmp_path / "history.sqlite3")
-    message_id = history.record(existing, NOW)
+    message_id = record_message(history, existing)
 
     decision = history.evaluate(candidate)
 
@@ -169,8 +176,9 @@ def test_curated_near_duplicate_paraphrases_are_rejected(
 @pytest.mark.fast
 def test_clearly_distinct_message_remains_accepted(tmp_path: Path) -> None:
     history = create_history(tmp_path / "history.sqlite3")
-    history.record(
-        "Your laughter makes every ordinary moment feel brighter.", NOW
+    record_message(
+        history,
+        "Your laughter makes every ordinary moment feel brighter.",
     )
 
     decision = history.evaluate(
@@ -212,7 +220,7 @@ def test_history_stores_text_once_and_uses_real_external_content_fts(
     path = tmp_path / "history.sqlite3"
     history = create_history(path)
     text = "Your calm presence makes each morning feel hopeful."
-    message_id = history.record(text, NOW)
+    message_id = record_message(history, text)
 
     with sqlite3.connect(path) as connection:
         history_columns = {
@@ -250,7 +258,7 @@ def test_recorded_message_text_is_immutable(tmp_path: Path) -> None:
     path = tmp_path / "history.sqlite3"
     history = create_history(path)
     text = "Your calm presence makes each morning feel hopeful."
-    message_id = history.record(text, NOW)
+    message_id = record_message(history, text)
 
     connection = history.database.connect()
     try:
@@ -294,7 +302,7 @@ def test_v1_migration_backfills_history_without_changing_message_text(
             "WHERE message_history_fts MATCH 'gentle'"
         ).fetchone()
 
-    assert versions == [(1,), (2,)]
+    assert versions == [(1,), (2,), (3,)]
     assert message == (text, "sent")
     assert history_row is not None
     assert history_row[0] == message_id

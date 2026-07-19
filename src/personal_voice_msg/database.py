@@ -46,7 +46,7 @@ ALL_STATES_SQL = ", ".join(f"'{state.value}'" for state in MessageState)
 DELIVERY_STATES_SQL = ", ".join(
     f"'{state.value}'" for state in DELIVERY_TRANSITIONS
 )
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 OPAQUE_RECIPIENT_KEY = re.compile(r"recipient_[A-Za-z0-9][A-Za-z0-9_-]{2,119}")
 
 
@@ -195,6 +195,13 @@ SCHEMA_V2_STATEMENTS = (
     END
     """,
 )
+SCHEMA_V3_STATEMENTS = (
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS
+        message_history_normalized_hash_unique_idx
+    ON message_history(normalized_hash)
+    """,
+)
 EXPECTED_SCHEMA_V1_OBJECTS = {
     ("table", "schema_migrations"): SCHEMA_V1_STATEMENTS[0],
     ("table", "sources"): SCHEMA_V1_STATEMENTS[1],
@@ -214,6 +221,13 @@ EXPECTED_SCHEMA_V2_OBJECTS = {
     ("trigger", "messages_history_ai"): SCHEMA_V2_STATEMENTS[3],
     ("trigger", "messages_history_ad"): SCHEMA_V2_STATEMENTS[4],
     ("trigger", "messages_text_immutable"): SCHEMA_V2_STATEMENTS[5],
+}
+EXPECTED_SCHEMA_V3_OBJECTS = {
+    **EXPECTED_SCHEMA_V2_OBJECTS,
+    (
+        "index",
+        "message_history_normalized_hash_unique_idx",
+    ): SCHEMA_V3_STATEMENTS[0],
 }
 
 
@@ -290,18 +304,23 @@ class Database:
         finally:
             connection.close()
 
+    @contextmanager
+    def write_transaction(self) -> Iterator[sqlite3.Connection]:
+        with self._transaction() as connection:
+            yield connection
+
     def migrate(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = self.connect()
         try:
             versions = _migration_versions(connection)
-            if versions not in (set(), {1}, {1, CURRENT_SCHEMA_VERSION}):
+            if versions not in (set(), {1}, {1, 2}, {1, 2, CURRENT_SCHEMA_VERSION}):
                 raise MigrationError("database has an unknown migration version")
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(SCHEMA_V1_STATEMENTS[0])
             versions = _migration_versions(connection)
-            if versions not in (set(), {1}, {1, CURRENT_SCHEMA_VERSION}):
+            if versions not in (set(), {1}, {1, 2}, {1, 2, CURRENT_SCHEMA_VERSION}):
                 raise MigrationError("database has an unknown migration version")
             if not versions:
                 for statement in SCHEMA_V1_STATEMENTS[1:]:
@@ -329,10 +348,25 @@ class Database:
                 )
                 connection.execute(
                     "INSERT INTO schema_migrations (version) VALUES (?)",
+                    (2,),
+                )
+                versions = {1, 2}
+
+            _validate_schema(connection, EXPECTED_SCHEMA_V2_OBJECTS)
+            if versions == {1, 2}:
+                try:
+                    for statement in SCHEMA_V3_STATEMENTS:
+                        connection.execute(statement)
+                except sqlite3.IntegrityError:
+                    raise MigrationError(
+                        "database contains duplicate normalized message hashes"
+                    ) from None
+                connection.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?)",
                     (CURRENT_SCHEMA_VERSION,),
                 )
 
-            _validate_schema(connection, EXPECTED_SCHEMA_V2_OBJECTS)
+            _validate_schema(connection, EXPECTED_SCHEMA_V3_OBJECTS)
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -341,28 +375,40 @@ class Database:
             connection.close()
 
     def create_message(self, text: str, now: datetime) -> int:
+        with self._transaction() as connection:
+            return self.create_message_in_transaction(connection, text, now)
+
+    def create_message_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        text: str,
+        now: datetime,
+    ) -> int:
+        if not connection.in_transaction:
+            raise DatabaseInvariantError(
+                "message insertion requires an active transaction"
+            )
         if not text.strip():
             raise ValueError("message text must not be empty")
         timestamp = _timestamp(now)
-        with self._transaction() as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO messages (text, state, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (text, MessageState.DISCOVERED.value, timestamp, timestamp),
-            )
-            if cursor.lastrowid is None:
-                raise DatabaseInvariantError("message insert did not return an id")
-            message_id = int(cursor.lastrowid)
-            connection.execute(
-                """
-                INSERT INTO message_history (message_id, normalized_hash)
-                VALUES (?, ?)
-                """,
-                (message_id, normalized_hash(text)),
-            )
-            return message_id
+        cursor = connection.execute(
+            """
+            INSERT INTO messages (text, state, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (text, MessageState.DISCOVERED.value, timestamp, timestamp),
+        )
+        if cursor.lastrowid is None:
+            raise DatabaseInvariantError("message insert did not return an id")
+        message_id = int(cursor.lastrowid)
+        connection.execute(
+            """
+            INSERT INTO message_history (message_id, normalized_hash)
+            VALUES (?, ?)
+            """,
+            (message_id, normalized_hash(text)),
+        )
+        return message_id
 
     def transition_message(
         self,

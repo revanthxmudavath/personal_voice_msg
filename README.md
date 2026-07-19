@@ -49,7 +49,11 @@ Message text is normalized with Unicode compatibility folding, case folding,
 punctuation removal, and whitespace collapsing. Exact variants are found by a
 SHA-256 hash. An external-content SQLite FTS5 index supports lexical history
 search without storing a second copy of each sentence. RapidFuzz scores the
-complete stored history and rejects token-sorted scores at or above `84.0`.
+complete stored history and rejects token-sorted scores at or above `79.0`.
+
+Candidate acceptance and history insertion run in one immediate SQLite write
+transaction. A unique normalized-hash index also prevents exact duplicates at
+the database boundary, while the transaction serializes near-duplicate checks.
 
 The threshold rejects every known duplicate in the T04 corpus. Its documented
 conservative tradeoff is that distinct sentences using nearly the same words in

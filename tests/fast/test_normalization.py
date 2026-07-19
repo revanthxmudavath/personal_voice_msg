@@ -75,3 +75,12 @@ def test_zero_width_format_character_cannot_hide_a_source_span() -> None:
     candidate = "Your kind\u200bness feels like home every day."
 
     assert copies_source_span(candidate, source, span_words=6)
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("control", ["\x00", "\x08"], ids=["nul", "backspace"])
+def test_control_character_cannot_hide_a_source_span(control: str) -> None:
+    source = "Your kindness feels like home every day."
+    candidate = f"Your kind{control}ness feels like home every day."
+
+    assert copies_source_span(candidate, source, span_words=6)
