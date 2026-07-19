@@ -31,3 +31,14 @@ never accepted as command-line values.
 Development, staging, and production recipients are profile-bound. A process
 fails closed if settings are missing or unknown, a secret path escapes its
 configured root, or recipient data belongs to a different profile.
+
+## SQLite state boundary
+
+SQLite is the operational source of truth. Migrations and all state changes use
+real file-backed databases with foreign keys enabled. Content moves through
+`discovered`, `validated`, `approved`, and `queued`; atomic reservation then
+drives `reserved`, `audio_ready`, `sending`, and a terminal delivery state.
+
+Reservations use an opaque recipient key plus Pacific date and begin with an
+immediate write transaction. This prevents competing workers from reserving a
+second message for the same recipient/date without storing a phone number.
