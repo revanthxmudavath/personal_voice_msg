@@ -1,0 +1,45 @@
+[project]
+name = "personal-voice-msg"
+version = "0.1.0"
+description = "Cloud-hosted personal voice message assistant"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "mypy>=1.15",
+    "pytest>=8.3",
+    "pyyaml>=6.0",
+    "ruff>=0.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+testpaths = ["tests"]
+markers = [
+    "fast: pure logic and small file-backed SQLite tests",
+    "integration: tests using real local or container dependencies",
+    "live: tests using changing public web sources",
+    "security: hostile input and trust-boundary tests",
+    "e2e: real model, voice, audio, WAHA, and WhatsApp delivery tests",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/personal_voice_msg"]

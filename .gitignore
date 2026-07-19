@@ -1,2 +1,16 @@
 AGENTS.md
 IMPLEMENTATION_PLAN.md
+
+.venv/
+.uv-cache/
+.tmp/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-tmp-*/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.env
+.env.*
+!.env.example
