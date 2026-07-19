@@ -48,7 +48,7 @@ def test_rerunning_migration_is_idempotent(tmp_path: Path) -> None:
         versions = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-    assert versions == [(1,)]
+    assert versions == [(1,), (2,)]
 
 
 @pytest.mark.fast
@@ -78,7 +78,7 @@ def test_newer_migration_version_fails_without_altering_database(
         )
         connection.execute(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-            (2, "future-version"),
+            (3, "future-version"),
         )
         connection.execute(
             "CREATE TABLE newer_schema_sentinel (value TEXT NOT NULL)"

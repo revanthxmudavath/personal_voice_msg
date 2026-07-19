@@ -42,3 +42,19 @@ drives `reserved`, `audio_ready`, `sending`, and a terminal delivery state.
 Reservations use an opaque recipient key plus Pacific date and begin with an
 immediate write transaction. This prevents competing workers from reserving a
 second message for the same recipient/date without storing a phone number.
+
+## Message history and deduplication
+
+Message text is normalized with Unicode compatibility folding, case folding,
+punctuation removal, and whitespace collapsing. Exact variants are found by a
+SHA-256 hash. An external-content SQLite FTS5 index supports lexical history
+search without storing a second copy of each sentence. RapidFuzz scores the
+complete stored history and rejects token-sorted scores at or above `84.0`.
+
+The threshold rejects every known duplicate in the T04 corpus. Its documented
+conservative tradeoff is that distinct sentences using nearly the same words in
+a different order can also be rejected. Six consecutive normalized words copied
+from transient source text are always rejected by a separate deterministic
+check. Invisible Unicode format characters cannot bypass that comparison, and
+stored message text is immutable after its hash is recorded. Source passages
+and duplicate-comparison text are never written to logs.

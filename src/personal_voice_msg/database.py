@@ -9,6 +9,8 @@ from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
 
+from personal_voice_msg.normalization import normalized_hash
+
 
 class MessageState(StrEnum):
     DISCOVERED = "discovered"
@@ -44,7 +46,7 @@ ALL_STATES_SQL = ", ".join(f"'{state.value}'" for state in MessageState)
 DELIVERY_STATES_SQL = ", ".join(
     f"'{state.value}'" for state in DELIVERY_TRANSITIONS
 )
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 OPAQUE_RECIPIENT_KEY = re.compile(r"recipient_[A-Za-z0-9][A-Za-z0-9_-]{2,119}")
 
 
@@ -77,7 +79,7 @@ class Reservation:
     state: MessageState
 
 
-SCHEMA_STATEMENTS = (
+SCHEMA_V1_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS schema_migrations (
         version INTEGER PRIMARY KEY,
@@ -155,16 +157,63 @@ SCHEMA_STATEMENTS = (
     ON deliveries(recipient_key, pacific_date)
     """,
 )
-EXPECTED_SCHEMA_OBJECTS = {
-    ("table", "schema_migrations"): SCHEMA_STATEMENTS[0],
-    ("table", "sources"): SCHEMA_STATEMENTS[1],
-    ("table", "inspiration_cards"): SCHEMA_STATEMENTS[2],
-    ("table", "messages"): SCHEMA_STATEMENTS[3],
-    ("table", "runs"): SCHEMA_STATEMENTS[4],
-    ("table", "audio_artifacts"): SCHEMA_STATEMENTS[5],
-    ("table", "deliveries"): SCHEMA_STATEMENTS[6],
-    ("index", "messages_state_id_idx"): SCHEMA_STATEMENTS[7],
-    ("index", "deliveries_recipient_date_idx"): SCHEMA_STATEMENTS[8],
+SCHEMA_V2_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS message_history (
+        message_id INTEGER PRIMARY KEY
+            REFERENCES messages(id) ON DELETE CASCADE,
+        normalized_hash TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS message_history_normalized_hash_idx
+    ON message_history(normalized_hash)
+    """,
+    """
+    CREATE VIRTUAL TABLE IF NOT EXISTS message_history_fts USING fts5(
+        text,
+        content='messages',
+        content_rowid='id'
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS messages_history_ai AFTER INSERT ON messages BEGIN
+        INSERT INTO message_history_fts(rowid, text) VALUES (new.id, new.text);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS messages_history_ad AFTER DELETE ON messages BEGIN
+        INSERT INTO message_history_fts(message_history_fts, rowid, text)
+        VALUES ('delete', old.id, old.text);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS messages_text_immutable
+    BEFORE UPDATE OF text ON messages
+    WHEN new.text IS NOT old.text BEGIN
+        SELECT RAISE(ABORT, 'message text is immutable');
+    END
+    """,
+)
+EXPECTED_SCHEMA_V1_OBJECTS = {
+    ("table", "schema_migrations"): SCHEMA_V1_STATEMENTS[0],
+    ("table", "sources"): SCHEMA_V1_STATEMENTS[1],
+    ("table", "inspiration_cards"): SCHEMA_V1_STATEMENTS[2],
+    ("table", "messages"): SCHEMA_V1_STATEMENTS[3],
+    ("table", "runs"): SCHEMA_V1_STATEMENTS[4],
+    ("table", "audio_artifacts"): SCHEMA_V1_STATEMENTS[5],
+    ("table", "deliveries"): SCHEMA_V1_STATEMENTS[6],
+    ("index", "messages_state_id_idx"): SCHEMA_V1_STATEMENTS[7],
+    ("index", "deliveries_recipient_date_idx"): SCHEMA_V1_STATEMENTS[8],
+}
+EXPECTED_SCHEMA_V2_OBJECTS = {
+    **EXPECTED_SCHEMA_V1_OBJECTS,
+    ("table", "message_history"): SCHEMA_V2_STATEMENTS[0],
+    ("index", "message_history_normalized_hash_idx"): SCHEMA_V2_STATEMENTS[1],
+    ("table", "message_history_fts"): SCHEMA_V2_STATEMENTS[2],
+    ("trigger", "messages_history_ai"): SCHEMA_V2_STATEMENTS[3],
+    ("trigger", "messages_history_ad"): SCHEMA_V2_STATEMENTS[4],
+    ("trigger", "messages_text_immutable"): SCHEMA_V2_STATEMENTS[5],
 }
 
 
@@ -197,8 +246,11 @@ def _normalize_schema_sql(value: str) -> str:
     return " ".join(without_guard.split())
 
 
-def _validate_schema_v1(connection: sqlite3.Connection) -> None:
-    for (object_type, name), expected_sql in EXPECTED_SCHEMA_OBJECTS.items():
+def _validate_schema(
+    connection: sqlite3.Connection,
+    expected_objects: dict[tuple[str, str], str],
+) -> None:
+    for (object_type, name), expected_sql in expected_objects.items():
         row = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
             (object_type, name),
@@ -243,25 +295,44 @@ class Database:
         connection = self.connect()
         try:
             versions = _migration_versions(connection)
-            if versions not in (set(), {CURRENT_SCHEMA_VERSION}):
+            if versions not in (set(), {1}, {1, CURRENT_SCHEMA_VERSION}):
                 raise MigrationError("database has an unknown migration version")
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(SCHEMA_STATEMENTS[0])
+            connection.execute(SCHEMA_V1_STATEMENTS[0])
             versions = _migration_versions(connection)
-            if versions not in (set(), {CURRENT_SCHEMA_VERSION}):
+            if versions not in (set(), {1}, {1, CURRENT_SCHEMA_VERSION}):
                 raise MigrationError("database has an unknown migration version")
-            if versions == {CURRENT_SCHEMA_VERSION}:
-                _validate_schema_v1(connection)
-                connection.commit()
-                return
-            for statement in SCHEMA_STATEMENTS[1:]:
-                connection.execute(statement)
-            connection.execute(
-                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
-                (CURRENT_SCHEMA_VERSION,),
-            )
-            _validate_schema_v1(connection)
+            if not versions:
+                for statement in SCHEMA_V1_STATEMENTS[1:]:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (1)"
+                )
+                versions = {1}
+
+            _validate_schema(connection, EXPECTED_SCHEMA_V1_OBJECTS)
+            if versions == {1}:
+                for statement in SCHEMA_V2_STATEMENTS:
+                    connection.execute(statement)
+                rows = connection.execute("SELECT id, text FROM messages").fetchall()
+                connection.executemany(
+                    """
+                    INSERT INTO message_history (message_id, normalized_hash)
+                    VALUES (?, ?)
+                    """,
+                    ((int(row[0]), normalized_hash(str(row[1]))) for row in rows),
+                )
+                connection.execute(
+                    "INSERT INTO message_history_fts(message_history_fts) "
+                    "VALUES ('rebuild')"
+                )
+                connection.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?)",
+                    (CURRENT_SCHEMA_VERSION,),
+                )
+
+            _validate_schema(connection, EXPECTED_SCHEMA_V2_OBJECTS)
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -283,7 +354,15 @@ class Database:
             )
             if cursor.lastrowid is None:
                 raise DatabaseInvariantError("message insert did not return an id")
-            return int(cursor.lastrowid)
+            message_id = int(cursor.lastrowid)
+            connection.execute(
+                """
+                INSERT INTO message_history (message_id, normalized_hash)
+                VALUES (?, ?)
+                """,
+                (message_id, normalized_hash(text)),
+            )
+            return message_id
 
     def transition_message(
         self,

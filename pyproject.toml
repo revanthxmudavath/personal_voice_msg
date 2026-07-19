@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Cloud-hosted personal voice message assistant"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "rapidfuzz>=3.14.5,<4",
+]
 
 [dependency-groups]
 dev = [
