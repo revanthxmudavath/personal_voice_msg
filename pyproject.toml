@@ -5,6 +5,7 @@ description = "Cloud-hosted personal voice message assistant"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "aiohttp>=3.14.2,<4",
     "rapidfuzz>=3.14.5,<4",
     "tzdata>=2025.2",
 ]
