@@ -16,6 +16,7 @@ EXPECTED_TABLES = {
     "runs",
     "audio_artifacts",
     "deliveries",
+    "daily_runs",
 }
 
 
@@ -29,10 +30,17 @@ def read_table_names(path: Path) -> set[str]:
 
 def downgrade_current_database_to_v2(path: Path) -> None:
     with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE IF EXISTS daily_runs")
         connection.execute(
             "DROP INDEX IF EXISTS message_history_normalized_hash_unique_idx"
         )
-        connection.execute("DELETE FROM schema_migrations WHERE version = 3")
+        connection.execute("DELETE FROM schema_migrations WHERE version IN (3, 4)")
+
+
+def downgrade_current_database_to_v3(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE IF EXISTS daily_runs")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 4")
 
 
 @pytest.mark.fast
@@ -57,7 +65,7 @@ def test_rerunning_migration_is_idempotent(tmp_path: Path) -> None:
         versions = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-    assert versions == [(1,), (2,), (3,)]
+    assert versions == [(1,), (2,), (3,), (4,)]
 
 
 @pytest.mark.fast
@@ -87,7 +95,7 @@ def test_newer_migration_version_fails_without_altering_database(
         )
         connection.execute(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-            (4, "future-version"),
+            (5, "future-version"),
         )
         connection.execute(
             "CREATE TABLE newer_schema_sentinel (value TEXT NOT NULL)"
@@ -346,6 +354,58 @@ def test_new_database_instance_preserves_schema_and_data(tmp_path: Path) -> None
 
 
 @pytest.mark.fast
+def test_version_three_database_upgrades_to_daily_runs_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "version-three.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    downgrade_current_database_to_v3(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO runs (
+                run_kind,
+                pacific_date,
+                state,
+                started_at
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "migration_probe",
+                "2026-07-20",
+                "preserve-me",
+                "2026-07-20T13:50:00+00:00",
+            ),
+        )
+
+    database.migrate()
+
+    with sqlite3.connect(database_path) as connection:
+        versions = connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        preserved = connection.execute(
+            "SELECT run_kind, pacific_date, state, started_at FROM runs"
+        ).fetchall()
+        daily_runs_table = connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'daily_runs'"
+        ).fetchone()
+    assert versions == [(1,), (2,), (3,), (4,)]
+    assert preserved == [
+        (
+            "migration_probe",
+            "2026-07-20",
+            "preserve-me",
+            "2026-07-20T13:50:00+00:00",
+        )
+    ]
+    assert daily_runs_table == (1,)
+
+
+@pytest.mark.fast
 def test_version_two_database_upgrades_to_unique_normalized_hashes(
     tmp_path: Path,
 ) -> None:
@@ -363,7 +423,7 @@ def test_version_two_database_upgrades_to_unique_normalized_hashes(
         indexes = connection.execute(
             "PRAGMA index_list(message_history)"
         ).fetchall()
-    assert versions == [(1,), (2,), (3,)]
+    assert versions == [(1,), (2,), (3,), (4,)]
     assert any(
         row[1] == "message_history_normalized_hash_unique_idx" and row[2] == 1
         for row in indexes
