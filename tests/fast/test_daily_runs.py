@@ -254,3 +254,44 @@ def test_naive_completion_timestamp_leaves_claim_unfinished(tmp_path: Path) -> N
         )
 
     assert Database(database_path).get_daily_run(RECIPIENT, PACIFIC_DATE) == claimed
+
+
+@pytest.mark.fast
+def test_completion_before_daily_run_start_leaves_claim_unfinished(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "early-completion.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    claimed = database.claim_daily_run(RECIPIENT, PACIFIC_DATE, NOW)
+    assert claimed is not None
+
+    with pytest.raises(ValueError, match="before.*start"):
+        database.complete_daily_run(
+            claimed.run_id,
+            NOW - timedelta(microseconds=1),
+        )
+
+    assert Database(database_path).get_daily_run(RECIPIENT, PACIFIC_DATE) == claimed
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "completed_at",
+    [NOW, NOW + timedelta(microseconds=1)],
+    ids=("same-instant", "later"),
+)
+def test_completion_at_or_after_daily_run_start_is_permitted(
+    tmp_path: Path,
+    completed_at: datetime,
+) -> None:
+    database_path = tmp_path / "valid-completion.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    claimed = database.claim_daily_run(RECIPIENT, PACIFIC_DATE, NOW)
+    assert claimed is not None
+
+    completed = database.complete_daily_run(claimed.run_id, completed_at)
+
+    assert completed.started_at == NOW
+    assert completed.finished_at == completed_at

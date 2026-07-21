@@ -543,6 +543,12 @@ class Database:
                 raise RecordNotFound("daily run does not exist")
             if DailyRunState(str(row[3])) is not DailyRunState.CLAIMED:
                 raise InvalidTransition("daily run is already completed")
+            started_at = datetime.fromisoformat(str(row[4]))
+            completed_at = datetime.fromisoformat(timestamp)
+            if completed_at < started_at:
+                raise ValueError(
+                    "daily run completion cannot be before its start"
+                )
             updated = connection.execute(
                 """
                 UPDATE daily_runs
