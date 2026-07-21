@@ -23,6 +23,21 @@ EXCLUDED_DIRECTORIES = {
 GITHUB_TOKEN = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
 )
+PRIVATE_KEY = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----")
+SENSITIVE_ARTIFACT_NAMES = {
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+    "recipient.json",
+}
+SENSITIVE_ARTIFACT_SUFFIXES = {
+    ".embedding",
+    ".key",
+    ".p12",
+    ".pem",
+    ".pfx",
+}
 
 
 def repository_files(root: Path, suffixes: set[str] | None = None) -> Iterable[Path]:
@@ -52,7 +67,11 @@ def check_mocks(root: Path) -> list[str]:
     for path in repository_files(root, {".py"}):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        except (SyntaxError, UnicodeDecodeError):
+        except (SyntaxError, UnicodeDecodeError) as error:
+            violations.append(
+                f"Python file cannot be scanned for mocks: "
+                f"{display_path(path, root)}: {error}"
+            )
             continue
 
         pytest_aliases = {
@@ -61,6 +80,20 @@ def check_mocks(root: Path) -> list[str]:
             if isinstance(node, ast.Import)
             for alias in node.names
             if alias.name == "pytest"
+        }
+        importlib_aliases = {
+            alias.asname or alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+            if alias.name == "importlib"
+        }
+        import_module_aliases = {
+            alias.asname or alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "importlib"
+            for alias in node.names
+            if alias.name == "import_module"
         }
 
         for node in ast.walk(tree):
@@ -92,6 +125,42 @@ def check_mocks(root: Path) -> list[str]:
                     and isinstance(node.value, ast.Name)
                     and node.value.id in pytest_aliases
                 )
+            elif isinstance(node, ast.Call):
+                arguments = node.args
+                dynamic_pytest_access = (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "getattr"
+                    and len(arguments) >= 2
+                    and isinstance(arguments[0], ast.Name)
+                    and arguments[0].id in pytest_aliases
+                    and isinstance(arguments[1], ast.Constant)
+                    and arguments[1].value == "MonkeyPatch"
+                )
+                module_name = (
+                    arguments[0].value
+                    if arguments and isinstance(arguments[0], ast.Constant)
+                    else None
+                )
+                dynamic_import = (
+                    isinstance(module_name, str)
+                    and (
+                        module_name == "unittest.mock"
+                        or module_name.startswith("pytest_mock")
+                    )
+                    and (
+                        (
+                            isinstance(node.func, ast.Attribute)
+                            and node.func.attr == "import_module"
+                            and isinstance(node.func.value, ast.Name)
+                            and node.func.value.id in importlib_aliases
+                        )
+                        or (
+                            isinstance(node.func, ast.Name)
+                            and node.func.id in import_module_aliases
+                        )
+                    )
+                )
+                prohibited = dynamic_pytest_access or dynamic_import
 
             if prohibited:
                 violations.append(
@@ -120,6 +189,21 @@ def check_lockfile(root: Path) -> list[str]:
 def check_secrets(root: Path) -> list[str]:
     violations: list[str] = []
     for path in repository_files(root):
+        filename = path.name.casefold()
+        documented_example = ".example." in filename or filename.endswith(
+            ".example"
+        )
+        sensitive_filename = (
+            filename in SENSITIVE_ARTIFACT_NAMES
+            or path.suffix.casefold() in SENSITIVE_ARTIFACT_SUFFIXES
+            or ("waha" in filename and "token" in filename)
+            or ("waha" in filename and "session" in filename)
+        )
+        if sensitive_filename and not documented_example:
+            violations.append(
+                f"sensitive artifact detected: {display_path(path, root)}"
+            )
+            continue
         try:
             if path.stat().st_size > 1_000_000:
                 continue
@@ -129,6 +213,10 @@ def check_secrets(root: Path) -> list[str]:
         if GITHUB_TOKEN.search(content):
             violations.append(
                 f"credential detected: {display_path(path, root)}"
+            )
+        if PRIVATE_KEY.search(content):
+            violations.append(
+                f"private key detected: {display_path(path, root)}"
             )
     return violations
 

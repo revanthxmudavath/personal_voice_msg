@@ -66,6 +66,28 @@ def test_mock_scan_rejects_prohibited_import(tmp_path: Path) -> None:
 
 @pytest.mark.fast
 @pytest.mark.parametrize(
+    ("filename", "content"),
+    [
+        ("test_invalid.py", b"def broken(:\n"),
+        ("test_non_utf8.py", b"value = \xff\xfe\n"),
+    ],
+)
+def test_mock_scan_rejects_unscannable_python(
+    tmp_path: Path,
+    filename: str,
+    content: bytes,
+) -> None:
+    planted = tmp_path / "tests" / filename
+    planted.parent.mkdir()
+    planted.write_bytes(content)
+
+    result = run_policy(tmp_path, "mocks")
+
+    assert_failed_with(result, filename)
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
     "source",
     [
         "from pytest import MonkeyPatch\n",
@@ -82,6 +104,27 @@ def test_mock_scan_rejects_pytest_monkeypatch_usage(
     result = run_policy(tmp_path, "mocks")
 
     assert_failed_with(result, "monkeypatch", "test_monkeypatch.py")
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import pytest\npatcher = getattr(pytest, 'MonkeyPatch')()\n",
+        (
+            "import importlib\n"
+            "mock_module = importlib.import_module('unittest.mock')\n"
+        ),
+    ],
+)
+def test_mock_scan_rejects_dynamic_mock_access(tmp_path: Path, source: str) -> None:
+    planted = tmp_path / "tests" / "test_dynamic_mock.py"
+    planted.parent.mkdir()
+    planted.write_text(source, encoding="utf-8")
+
+    result = run_policy(tmp_path, "mocks")
+
+    assert_failed_with(result, "mock", "test_dynamic_mock.py")
 
 
 @pytest.mark.fast
@@ -133,6 +176,73 @@ def test_secret_scan_accepts_non_secret_content(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("No credentials here.\n", encoding="utf-8")
 
     result = run_policy(tmp_path, "secrets")
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    ("filename", "content"),
+    [
+        ("recipient.json", b'{"phone_number":"+15550001111"}\n'),
+        ("waha-token.txt", b"waha-private-test-token\n"),
+        ("owner.voice.embedding", b"\x00\x01private-voice-vector\xff"),
+        ("waha-session.bin", b"\x00\x01private-session-state\xff"),
+        ("id_ed25519", b"private-key-material"),
+    ],
+)
+def test_secret_scan_rejects_sensitive_artifact_filenames(
+    tmp_path: Path,
+    filename: str,
+    content: bytes,
+) -> None:
+    planted = tmp_path / filename
+    planted.write_bytes(content)
+
+    result = run_policy(tmp_path, "secrets")
+
+    assert_failed_with(result, filename)
+
+
+@pytest.mark.fast
+def test_secret_scan_rejects_private_key_content(tmp_path: Path) -> None:
+    planted = tmp_path / "deployment-notes.txt"
+    private_key = (
+        "-----BEGIN "
+        + "PRIVATE KEY-----\n"
+        + "not-a-real-key\n"
+        + "-----END PRIVATE KEY-----\n"
+    )
+    planted.write_text(private_key, encoding="utf-8")
+
+    result = run_policy(tmp_path, "secrets")
+
+    assert_failed_with(result, "private key", "deployment-notes.txt")
+
+
+@pytest.mark.fast
+def test_secret_scan_allows_explicit_documentation_examples(tmp_path: Path) -> None:
+    fixture_root = tmp_path / "tests" / "fixtures"
+    fixture_root.mkdir(parents=True)
+    (fixture_root / "recipient.example.json").write_text(
+        '{"phone_number":"+15550001111"}\n',
+        encoding="utf-8",
+    )
+    (fixture_root / "voice.embedding.example").write_text(
+        "documented-placeholder-only\n",
+        encoding="utf-8",
+    )
+
+    result = run_policy(tmp_path, "secrets")
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.fast
+def test_secret_scan_accepts_current_repository_documented_fixtures() -> None:
+    repository_root = Path(__file__).parents[2]
+
+    result = run_policy(repository_root, "secrets")
 
     assert result.returncode == 0, result.stderr
 
