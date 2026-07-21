@@ -23,6 +23,15 @@ def normalized_hash(text: str) -> str:
     return hashlib.sha256(normalize_text(text).encode("utf-8")).hexdigest()
 
 
+def _source_copy_compact(text: str) -> str:
+    compatible = unicodedata.normalize("NFKC", text).casefold()
+    return "".join(
+        character
+        for character in compatible
+        if unicodedata.category(character)[0] in {"L", "M", "N"}
+    )
+
+
 def copies_source_span(
     candidate: str,
     source: str,
@@ -41,7 +50,14 @@ def copies_source_span(
         tuple(source_words[index : index + span_words])
         for index in range(len(source_words) - span_words + 1)
     }
-    return any(
+    if any(
         tuple(candidate_words[index : index + span_words]) in source_spans
         for index in range(len(candidate_words) - span_words + 1)
+    ):
+        return True
+
+    candidate_compact = _source_copy_compact(candidate)
+    return any(
+        _source_copy_compact(" ".join(span)) in candidate_compact
+        for span in source_spans
     )

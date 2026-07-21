@@ -67,7 +67,7 @@ class MessageHistory:
             )
             if not decision.accepted:
                 return decision
-            message_id = self.database.create_message_in_transaction(
+            message_id = self.database._create_message_in_transaction(
                 connection,
                 candidate,
                 now,
