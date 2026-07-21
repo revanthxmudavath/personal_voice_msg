@@ -73,11 +73,19 @@ def install_redacting_filter(
     logger: logging.Logger,
     redactor: Redactor,
 ) -> None:
-    """Install one redacting filter on every existing logger handler."""
+    """Install the current redactor on every handler effective for this logger."""
 
-    for handler in logger.handlers:
-        if not any(
-            isinstance(installed_filter, RedactingFilter)
-            for installed_filter in handler.filters
-        ):
+    current: logging.Logger | None = logger
+    visited_handlers: set[int] = set()
+    while current is not None:
+        for handler in current.handlers:
+            if id(handler) in visited_handlers:
+                continue
+            visited_handlers.add(id(handler))
+            for installed_filter in tuple(handler.filters):
+                if isinstance(installed_filter, RedactingFilter):
+                    handler.removeFilter(installed_filter)
             handler.addFilter(RedactingFilter(redactor))
+        if not current.propagate:
+            break
+        current = current.parent

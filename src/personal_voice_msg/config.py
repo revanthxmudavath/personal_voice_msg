@@ -72,6 +72,13 @@ def _runtime_profile(value: str) -> RuntimeProfile:
         raise ConfigurationError("runtime profile is invalid") from None
 
 
+def _project_root(config_path: Path) -> Path:
+    for parent in config_path.parents:
+        if (parent / "pyproject.toml").is_file() or (parent / ".git").exists():
+            return parent
+    return config_path.parent
+
+
 def _secret_root(
     config_path: Path,
     value: str,
@@ -86,13 +93,12 @@ def _secret_root(
         raise ConfigurationError("secret root is missing") from None
     if not resolved.is_dir():
         raise ConfigurationError("secret root is not a directory")
-    if (
-        profile is not RuntimeProfile.DEVELOPMENT
-        and resolved.is_relative_to(config_path.parent.resolve())
-    ):
-        raise ConfigurationError(
-            "deployed secret root must be outside the configuration directory"
-        )
+    if profile is not RuntimeProfile.DEVELOPMENT:
+        project_root = _project_root(config_path)
+        if resolved.is_relative_to(project_root):
+            raise ConfigurationError(
+                "deployed secret root must be outside the project directory"
+            )
     return resolved
 
 

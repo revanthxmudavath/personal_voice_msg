@@ -40,6 +40,8 @@ def create_configuration(
 ) -> tuple[Path, dict[str, str], dict[str, str]]:
     config_root = root if profile == "development" else root / "repository"
     config_root.mkdir(exist_ok=True)
+    if profile != "development":
+        (config_root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
     secret_root = (
         config_root / "secrets"
         if profile == "development" or secret_root_inside_config
@@ -223,6 +225,24 @@ def test_deployed_profile_rejects_secret_root_inside_config_directory(
 
     with pytest.raises(ConfigurationError):
         load_settings(config_path)
+
+
+@pytest.mark.fast
+def test_deployed_profile_rejects_secret_root_elsewhere_inside_project(
+    tmp_path: Path,
+) -> None:
+    config_path, values, _ = create_configuration(
+        tmp_path,
+        profile="staging",
+        secret_root_inside_config=True,
+    )
+    nested_config_root = config_path.parent / "config"
+    nested_config_root.mkdir()
+    nested_config_path = nested_config_root / "settings.toml"
+    write_toml(nested_config_path, values)
+
+    with pytest.raises(ConfigurationError, match="project"):
+        load_settings(nested_config_path)
 
 
 @pytest.mark.fast

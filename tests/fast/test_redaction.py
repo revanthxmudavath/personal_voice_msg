@@ -157,3 +157,51 @@ def test_install_redacting_filter_covers_handlers_once_and_exception_logs() -> N
         assert REDACTED in rendered
         for plaintext in (secret, phone, token):
             assert plaintext not in rendered
+
+
+@pytest.mark.fast
+def test_install_redacting_filter_covers_propagated_parent_handler() -> None:
+    secret = "propagated-secret"
+    output = io.StringIO()
+    handler = logging.StreamHandler(output)
+    parent = logging.getLogger(f"test.redaction.parent.{id(output)}")
+    child = parent.getChild("child")
+    parent.handlers.clear()
+    child.handlers.clear()
+    parent.propagate = False
+    child.propagate = True
+    parent.setLevel(logging.INFO)
+    child.setLevel(logging.INFO)
+    parent.addHandler(handler)
+    try:
+        redaction.install_redacting_filter(child, Redactor((secret,)))
+        child.info("secret=%s", secret)
+    finally:
+        parent.removeHandler(handler)
+        handler.close()
+
+    assert output.getvalue().strip() == "secret=[REDACTED]"
+
+
+@pytest.mark.fast
+def test_install_redacting_filter_replaces_obsolete_redactor() -> None:
+    old_secret = "old-secret"
+    new_secret = "new-secret"
+    output = io.StringIO()
+    handler = logging.StreamHandler(output)
+    logger = logging.getLogger(f"test.redaction.refresh.{id(output)}")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    try:
+        redaction.install_redacting_filter(logger, Redactor((old_secret,)))
+        redaction.install_redacting_filter(logger, Redactor((new_secret,)))
+        logger.info("secret=%s", new_secret)
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    filters = [item for item in handler.filters if isinstance(item, RedactingFilter)]
+    assert len(filters) == 1
+    assert output.getvalue().strip() == "secret=[REDACTED]"
