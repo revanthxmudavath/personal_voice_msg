@@ -112,10 +112,10 @@ def test_daily_run_claims_are_independent_by_recipient_and_pacific_date(
     "now",
     [
         NOW - timedelta(microseconds=1),
-        NOW + timedelta(minutes=1),
         NOW + timedelta(minutes=10),
+        NOW + timedelta(minutes=10, microseconds=1),
     ],
-    ids=("before-prepare", "missed-prepare", "send-window"),
+    ids=("before-prepare", "send-start", "after-prepare"),
 )
 def test_daily_run_claim_is_rejected_outside_the_prepare_window(
     tmp_path: Path,
@@ -129,6 +129,28 @@ def test_daily_run_claim_is_rejected_outside_the_prepare_window(
         database.claim_daily_run(RECIPIENT, PACIFIC_DATE, now)
 
     assert count_daily_runs(database_path) == 0
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "now",
+    [
+        NOW,
+        NOW + timedelta(minutes=1),
+        NOW + timedelta(minutes=9, seconds=59, microseconds=999_999),
+    ],
+    ids=("prepare-start", "inside-prepare", "last-prepare-microsecond"),
+)
+def test_daily_run_claim_is_accepted_throughout_the_prepare_window(
+    tmp_path: Path,
+    now: datetime,
+) -> None:
+    database_path = tmp_path / "inside-prepare.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+
+    assert database.claim_daily_run(RECIPIENT, PACIFIC_DATE, now) is not None
+    assert count_daily_runs(database_path) == 1
 
 
 @pytest.mark.fast

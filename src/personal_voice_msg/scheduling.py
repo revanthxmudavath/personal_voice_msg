@@ -6,13 +6,19 @@ from enum import StrEnum
 from zoneinfo import ZoneInfo
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
-TRIGGER_WINDOW = timedelta(minutes=1)
 
 
 class ScheduleKind(StrEnum):
     WEEKLY_DISCOVERY = "weekly_discovery"
     DAILY_PREPARE = "daily_prepare"
     DAILY_SEND = "daily_send"
+
+
+TRIGGER_WINDOWS = {
+    ScheduleKind.WEEKLY_DISCOVERY: timedelta(days=1),
+    ScheduleKind.DAILY_PREPARE: timedelta(minutes=10),
+    ScheduleKind.DAILY_SEND: timedelta(minutes=5),
+}
 
 
 class TriggerStatus(StrEnum):
@@ -40,7 +46,7 @@ def _scheduled_trigger(
         kind=kind,
         pacific_date=pacific_date,
         scheduled_at=scheduled_at,
-        cutoff_at=scheduled_at + TRIGGER_WINDOW,
+        cutoff_at=scheduled_at + TRIGGER_WINDOWS[kind],
     )
 
 

@@ -64,7 +64,9 @@ def test_daily_triggers_stay_at_pacific_wall_time_across_dst(
     assert prepare.scheduled_at == prepare_at
     assert send.scheduled_at == send_at
     assert prepare.scheduled_at.astimezone(PACIFIC).time().isoformat() == "06:50:00"
+    assert prepare.cutoff_at.astimezone(PACIFIC).time().isoformat() == "07:00:00"
     assert send.scheduled_at.astimezone(PACIFIC).time().isoformat() == "07:00:00"
+    assert send.cutoff_at.astimezone(PACIFIC).time().isoformat() == "07:05:00"
 
 
 @pytest.mark.fast
@@ -107,22 +109,55 @@ def test_classification_rejects_a_naive_timestamp() -> None:
 
 @pytest.mark.fast
 @pytest.mark.parametrize(
-    ("offset", "expected"),
+    ("kind", "scheduled_at", "deadline"),
     [
-        (timedelta(microseconds=-1), TriggerStatus.NOT_DUE),
-        (timedelta(0), TriggerStatus.DUE),
-        (timedelta(seconds=59, microseconds=999_999), TriggerStatus.DUE),
-        (timedelta(minutes=1), TriggerStatus.MISSED),
-        (timedelta(hours=1), TriggerStatus.MISSED),
+        (
+            ScheduleKind.WEEKLY_DISCOVERY,
+            datetime(2026, 7, 20, 0, 0, tzinfo=PACIFIC),
+            datetime(2026, 7, 21, 0, 0, tzinfo=PACIFIC),
+        ),
+        (
+            ScheduleKind.DAILY_PREPARE,
+            datetime(2026, 7, 20, 6, 50, tzinfo=PACIFIC),
+            datetime(2026, 7, 20, 7, 0, tzinfo=PACIFIC),
+        ),
+        (
+            ScheduleKind.DAILY_SEND,
+            datetime(2026, 7, 20, 7, 0, tzinfo=PACIFIC),
+            datetime(2026, 7, 20, 7, 5, tzinfo=PACIFIC),
+        ),
+    ],
+    ids=("weekly-discovery", "daily-prepare", "daily-send"),
+)
+@pytest.mark.parametrize(
+    ("boundary", "expected"),
+    [
+        ("before", TriggerStatus.NOT_DUE),
+        ("start", TriggerStatus.DUE),
+        ("last-microsecond", TriggerStatus.DUE),
+        ("deadline", TriggerStatus.MISSED),
+        ("after", TriggerStatus.MISSED),
     ],
 )
-def test_trigger_has_one_minute_due_window_then_is_missed(
-    offset: timedelta,
+def test_trigger_uses_its_kind_specific_pacific_grace_window(
+    kind: ScheduleKind,
+    scheduled_at: datetime,
+    deadline: datetime,
+    boundary: str,
     expected: TriggerStatus,
 ) -> None:
-    trigger = trigger_for(date(2026, 7, 20), ScheduleKind.DAILY_SEND)
+    trigger = trigger_for(date(2026, 7, 20), kind)
+    instants = {
+        "before": scheduled_at - timedelta(microseconds=1),
+        "start": scheduled_at,
+        "last-microsecond": deadline - timedelta(microseconds=1),
+        "deadline": deadline,
+        "after": deadline + timedelta(microseconds=1),
+    }
 
-    assert classify_trigger(trigger, trigger.scheduled_at + offset) is expected
+    assert trigger.scheduled_at == scheduled_at.astimezone(UTC)
+    assert trigger.cutoff_at == deadline.astimezone(UTC)
+    assert classify_trigger(trigger, instants[boundary]) is expected
 
 
 @pytest.mark.fast
