@@ -43,7 +43,7 @@ def copies_source_span(
 
     candidate_words = normalize_text(candidate).split()
     source_words = normalize_text(source).split()
-    if len(candidate_words) < span_words or len(source_words) < span_words:
+    if len(source_words) < span_words:
         return False
 
     source_spans = {

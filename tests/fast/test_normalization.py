@@ -99,3 +99,11 @@ def test_visible_in_word_characters_cannot_hide_a_source_span(
     candidate = f"Your {obfuscated_word} feels like home every day."
 
     assert copies_source_span(candidate, source, span_words=6)
+
+
+@pytest.mark.fast
+def test_removing_all_spaces_cannot_hide_a_source_span() -> None:
+    source = "One two three four five six."
+    candidate = "Onetwothreefourfivesix."
+
+    assert copies_source_span(candidate, source, span_words=6)
