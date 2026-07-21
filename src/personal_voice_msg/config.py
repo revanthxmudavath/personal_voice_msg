@@ -72,7 +72,11 @@ def _runtime_profile(value: str) -> RuntimeProfile:
         raise ConfigurationError("runtime profile is invalid") from None
 
 
-def _secret_root(config_path: Path, value: str) -> Path:
+def _secret_root(
+    config_path: Path,
+    value: str,
+    profile: RuntimeProfile,
+) -> Path:
     root = Path(value)
     if not root.is_absolute():
         root = config_path.parent / root
@@ -82,6 +86,13 @@ def _secret_root(config_path: Path, value: str) -> Path:
         raise ConfigurationError("secret root is missing") from None
     if not resolved.is_dir():
         raise ConfigurationError("secret root is not a directory")
+    if (
+        profile is not RuntimeProfile.DEVELOPMENT
+        and resolved.is_relative_to(config_path.parent.resolve())
+    ):
+        raise ConfigurationError(
+            "deployed secret root must be outside the configuration directory"
+        )
     return resolved
 
 
@@ -144,7 +155,7 @@ def load_settings(config_path: Path) -> Settings:
     path = config_path.resolve()
     document = _read_toml(path)
     profile = _runtime_profile(document["profile"])
-    root = _secret_root(path, document["secret_root"])
+    root = _secret_root(path, document["secret_root"], profile)
     recipient_path = _secret_file(root, document["recipient_file"], "recipient_file")
     token_path = _secret_file(root, document["waha_token_file"], "waha_token_file")
     embedding_path = _secret_file(

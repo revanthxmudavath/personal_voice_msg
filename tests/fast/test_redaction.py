@@ -1,9 +1,16 @@
 import io
 import logging
+from dataclasses import asdict
 
 import pytest
 
-from personal_voice_msg.redaction import REDACTED, RedactingFilter, Redactor
+from personal_voice_msg import redaction
+from personal_voice_msg.redaction import (
+    REDACTED,
+    RedactingFilter,
+    Redactor,
+    SensitiveValue,
+)
 
 
 def render_log(
@@ -100,3 +107,53 @@ def test_registered_value_is_removed_from_exception_traceback() -> None:
     rendered = output.getvalue()
     assert REDACTED in rendered
     assert secret not in rendered
+
+
+@pytest.mark.fast
+def test_sensitive_value_does_not_leak_through_dataclass_conversion() -> None:
+    secret = "dataclass-conversion-secret"
+
+    with pytest.raises(TypeError):
+        asdict(SensitiveValue(secret))
+
+
+@pytest.mark.fast
+def test_install_redacting_filter_covers_handlers_once_and_exception_logs() -> None:
+    secret = "central-filter-secret"
+    phone = "+14155550123"
+    token = "waha-central-filter-token"
+    redactor = Redactor((secret, phone, token))
+    outputs = (io.StringIO(), io.StringIO())
+    handlers = tuple(logging.StreamHandler(output) for output in outputs)
+    logger = logging.getLogger(f"test.redaction.central.{id(outputs)}")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    for handler in handlers:
+        logger.addHandler(handler)
+
+    install_redacting_filter = getattr(redaction, "install_redacting_filter")
+    try:
+        install_redacting_filter(logger, redactor)
+        install_redacting_filter(logger, redactor)
+        logger.info("recipient=%s token=%s", phone, token)
+        try:
+            raise RuntimeError(f"operation failed for {secret}")
+        except RuntimeError:
+            logger.exception("request failed token=%s", token)
+    finally:
+        for handler in handlers:
+            logger.removeHandler(handler)
+            handler.close()
+
+    for handler, output in zip(handlers, outputs, strict=True):
+        filters = [
+            installed_filter
+            for installed_filter in handler.filters
+            if isinstance(installed_filter, RedactingFilter)
+        ]
+        assert len(filters) == 1
+        rendered = output.getvalue()
+        assert REDACTED in rendered
+        for plaintext in (secret, phone, token):
+            assert plaintext not in rendered

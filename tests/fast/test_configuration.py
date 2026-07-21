@@ -36,8 +36,15 @@ def create_configuration(
     *,
     profile: str = "development",
     recipient_profile: str | None = None,
+    secret_root_inside_config: bool = False,
 ) -> tuple[Path, dict[str, str], dict[str, str]]:
-    secret_root = root / "secrets"
+    config_root = root if profile == "development" else root / "repository"
+    config_root.mkdir(exist_ok=True)
+    secret_root = (
+        config_root / "secrets"
+        if profile == "development" or secret_root_inside_config
+        else root / "external-secrets"
+    )
     secret_root.mkdir()
 
     phone_number = "+1" + "5550001111"
@@ -66,7 +73,7 @@ def create_configuration(
         "voice_embedding_file": "voice.embedding",
         "waha_session_file": "waha-session.bin",
     }
-    config_path = root / "settings.toml"
+    config_path = config_root / "settings.toml"
     write_toml(config_path, values)
 
     sensitive = {
@@ -200,6 +207,33 @@ def test_staging_rejects_production_recipient_configuration(tmp_path: Path) -> N
 
     with pytest.raises(ConfigurationError):
         load_settings(config_path)
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("profile", ["staging", "production"])
+def test_deployed_profile_rejects_secret_root_inside_config_directory(
+    tmp_path: Path,
+    profile: str,
+) -> None:
+    config_path, _, _ = create_configuration(
+        tmp_path,
+        profile=profile,
+        secret_root_inside_config=True,
+    )
+
+    with pytest.raises(ConfigurationError):
+        load_settings(config_path)
+
+
+@pytest.mark.fast
+def test_development_accepts_bounded_relative_secret_root(tmp_path: Path) -> None:
+    config_path, values, _ = create_configuration(tmp_path)
+    values["secret_root"] = "secrets"
+    write_toml(config_path, values)
+
+    settings = load_settings(config_path)
+
+    assert settings.profile is RuntimeProfile.DEVELOPMENT
 
 
 @pytest.mark.fast
