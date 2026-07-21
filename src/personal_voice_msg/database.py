@@ -451,10 +451,6 @@ class Database:
         finally:
             connection.close()
 
-    def create_message(self, text: str, now: datetime) -> int:
-        with self._transaction() as connection:
-            return self.create_message_in_transaction(connection, text, now)
-
     def claim_daily_run(
         self,
         recipient_key: str,
@@ -547,6 +543,12 @@ class Database:
                 raise RecordNotFound("daily run does not exist")
             if DailyRunState(str(row[3])) is not DailyRunState.CLAIMED:
                 raise InvalidTransition("daily run is already completed")
+            started_at = datetime.fromisoformat(str(row[4]))
+            completed_at = datetime.fromisoformat(timestamp)
+            if completed_at < started_at:
+                raise ValueError(
+                    "daily run completion cannot be before its start"
+                )
             updated = connection.execute(
                 """
                 UPDATE daily_runs
@@ -572,7 +574,7 @@ class Database:
             )
         return _daily_run_from_row(completed_row)
 
-    def create_message_in_transaction(
+    def _create_message_in_transaction(
         self,
         connection: sqlite3.Connection,
         text: str,

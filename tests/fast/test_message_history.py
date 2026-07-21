@@ -111,6 +111,12 @@ def create_v1_database(path: Path, text: str) -> int:
 
 
 @pytest.mark.fast
+def test_database_has_no_public_message_insertion_bypass() -> None:
+    assert not hasattr(Database, "create_message")
+    assert not hasattr(Database, "create_message_in_transaction")
+
+
+@pytest.mark.fast
 @pytest.mark.parametrize(
     "variant",
     [

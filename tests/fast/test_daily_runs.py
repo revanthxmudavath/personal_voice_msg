@@ -112,10 +112,10 @@ def test_daily_run_claims_are_independent_by_recipient_and_pacific_date(
     "now",
     [
         NOW - timedelta(microseconds=1),
-        NOW + timedelta(minutes=1),
         NOW + timedelta(minutes=10),
+        NOW + timedelta(minutes=10, microseconds=1),
     ],
-    ids=("before-prepare", "missed-prepare", "send-window"),
+    ids=("before-prepare", "send-start", "after-prepare"),
 )
 def test_daily_run_claim_is_rejected_outside_the_prepare_window(
     tmp_path: Path,
@@ -129,6 +129,28 @@ def test_daily_run_claim_is_rejected_outside_the_prepare_window(
         database.claim_daily_run(RECIPIENT, PACIFIC_DATE, now)
 
     assert count_daily_runs(database_path) == 0
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "now",
+    [
+        NOW,
+        NOW + timedelta(minutes=1),
+        NOW + timedelta(minutes=9, seconds=59, microseconds=999_999),
+    ],
+    ids=("prepare-start", "inside-prepare", "last-prepare-microsecond"),
+)
+def test_daily_run_claim_is_accepted_throughout_the_prepare_window(
+    tmp_path: Path,
+    now: datetime,
+) -> None:
+    database_path = tmp_path / "inside-prepare.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+
+    assert database.claim_daily_run(RECIPIENT, PACIFIC_DATE, now) is not None
+    assert count_daily_runs(database_path) == 1
 
 
 @pytest.mark.fast
@@ -254,3 +276,44 @@ def test_naive_completion_timestamp_leaves_claim_unfinished(tmp_path: Path) -> N
         )
 
     assert Database(database_path).get_daily_run(RECIPIENT, PACIFIC_DATE) == claimed
+
+
+@pytest.mark.fast
+def test_completion_before_daily_run_start_leaves_claim_unfinished(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "early-completion.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    claimed = database.claim_daily_run(RECIPIENT, PACIFIC_DATE, NOW)
+    assert claimed is not None
+
+    with pytest.raises(ValueError, match="before.*start"):
+        database.complete_daily_run(
+            claimed.run_id,
+            NOW - timedelta(microseconds=1),
+        )
+
+    assert Database(database_path).get_daily_run(RECIPIENT, PACIFIC_DATE) == claimed
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "completed_at",
+    [NOW, NOW + timedelta(microseconds=1)],
+    ids=("same-instant", "later"),
+)
+def test_completion_at_or_after_daily_run_start_is_permitted(
+    tmp_path: Path,
+    completed_at: datetime,
+) -> None:
+    database_path = tmp_path / "valid-completion.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    claimed = database.claim_daily_run(RECIPIENT, PACIFIC_DATE, NOW)
+    assert claimed is not None
+
+    completed = database.complete_daily_run(claimed.run_id, completed_at)
+
+    assert completed.started_at == NOW
+    assert completed.finished_at == completed_at

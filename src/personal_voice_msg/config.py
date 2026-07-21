@@ -72,7 +72,18 @@ def _runtime_profile(value: str) -> RuntimeProfile:
         raise ConfigurationError("runtime profile is invalid") from None
 
 
-def _secret_root(config_path: Path, value: str) -> Path:
+def _project_root(config_path: Path) -> Path:
+    for parent in config_path.parents:
+        if (parent / "pyproject.toml").is_file() or (parent / ".git").exists():
+            return parent
+    return config_path.parent
+
+
+def _secret_root(
+    config_path: Path,
+    value: str,
+    profile: RuntimeProfile,
+) -> Path:
     root = Path(value)
     if not root.is_absolute():
         root = config_path.parent / root
@@ -82,6 +93,12 @@ def _secret_root(config_path: Path, value: str) -> Path:
         raise ConfigurationError("secret root is missing") from None
     if not resolved.is_dir():
         raise ConfigurationError("secret root is not a directory")
+    if profile is not RuntimeProfile.DEVELOPMENT:
+        project_root = _project_root(config_path)
+        if resolved.is_relative_to(project_root):
+            raise ConfigurationError(
+                "deployed secret root must be outside the project directory"
+            )
     return resolved
 
 
@@ -144,7 +161,7 @@ def load_settings(config_path: Path) -> Settings:
     path = config_path.resolve()
     document = _read_toml(path)
     profile = _runtime_profile(document["profile"])
-    root = _secret_root(path, document["secret_root"])
+    root = _secret_root(path, document["secret_root"], profile)
     recipient_path = _secret_file(root, document["recipient_file"], "recipient_file")
     token_path = _secret_file(root, document["waha_token_file"], "waha_token_file")
     embedding_path = _secret_file(

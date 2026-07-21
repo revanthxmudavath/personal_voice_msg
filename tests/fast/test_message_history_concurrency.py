@@ -14,8 +14,44 @@ from personal_voice_msg.history import (
     DuplicateReason,
     MessageHistory,
 )
+from personal_voice_msg.normalization import normalized_hash
 
 NOW = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+
+
+def record_message(database: Database, text: str) -> int:
+    decision = MessageHistory(database).evaluate_and_record(text, NOW)
+    assert decision.accepted
+    assert decision.recorded_message_id is not None
+    return decision.recorded_message_id
+
+
+def insert_message_with_history(
+    connection: sqlite3.Connection,
+    text: str,
+) -> int:
+    cursor = connection.execute(
+        """
+        INSERT INTO messages (text, state, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            text,
+            MessageState.DISCOVERED.value,
+            NOW.isoformat(),
+            NOW.isoformat(),
+        ),
+    )
+    assert cursor.lastrowid is not None
+    message_id = int(cursor.lastrowid)
+    connection.execute(
+        """
+        INSERT INTO message_history (message_id, normalized_hash)
+        VALUES (?, ?)
+        """,
+        (message_id, normalized_hash(text)),
+    )
+    return message_id
 
 
 def evaluate_concurrently(
@@ -99,8 +135,8 @@ def test_migrated_schema_enforces_unique_normalized_hashes(tmp_path: Path) -> No
     database_path = tmp_path / "unique-hash.sqlite3"
     database = Database(database_path)
     database.migrate()
-    first_message_id = database.create_message(
-        "Your smile makes every morning brighter.", NOW
+    first_message_id = record_message(
+        database, "Your smile makes every morning brighter."
     )
 
     connection = database.connect()
@@ -145,15 +181,16 @@ def test_duplicate_database_insert_rolls_back_message_hash_and_fts(
     database_path = tmp_path / "duplicate-rollback.sqlite3"
     database = Database(database_path)
     database.migrate()
-    first_message_id = database.create_message(
-        "Your smile makes every morning brighter.", NOW
+    first_message_id = record_message(
+        database, "Your smile makes every morning brighter."
     )
 
     with pytest.raises(sqlite3.IntegrityError):
-        database.create_message(
-            "YOUR smile---makes every morning brighter!!!",
-            NOW,
-        )
+        with database.write_transaction() as connection:
+            insert_message_with_history(
+                connection,
+                "YOUR smile---makes every morning brighter!!!",
+            )
 
     with sqlite3.connect(database_path) as connection:
         messages = connection.execute("SELECT id FROM messages").fetchall()

@@ -84,3 +84,26 @@ def test_control_character_cannot_hide_a_source_span(control: str) -> None:
     candidate = f"Your kind{control}ness feels like home every day."
 
     assert copies_source_span(candidate, source, span_words=6)
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "obfuscated_word",
+    ["kind-ness", "kind\U0001f496ness"],
+    ids=["punctuation", "unicode-symbol"],
+)
+def test_visible_in_word_characters_cannot_hide_a_source_span(
+    obfuscated_word: str,
+) -> None:
+    source = "Your kindness feels like home every day."
+    candidate = f"Your {obfuscated_word} feels like home every day."
+
+    assert copies_source_span(candidate, source, span_words=6)
+
+
+@pytest.mark.fast
+def test_removing_all_spaces_cannot_hide_a_source_span() -> None:
+    source = "One two three four five six."
+    candidate = "Onetwothreefourfivesix."
+
+    assert copies_source_span(candidate, source, span_words=6)

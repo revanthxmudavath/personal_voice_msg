@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import re
 import traceback
-from dataclasses import dataclass, field
 
 REDACTED = "[REDACTED]"
 GITHUB_TOKEN = re.compile(
@@ -11,11 +10,13 @@ GITHUB_TOKEN = re.compile(
 )
 E164_PHONE = re.compile(r"(?<!\w)\+[1-9][0-9]{7,14}(?![0-9])")
 
-@dataclass(frozen=True, slots=True)
 class SensitiveValue[SensitiveType]:
     """Require an explicit method call to access sensitive data."""
 
-    _value: SensitiveType = field(repr=False)
+    __slots__ = ("_value",)
+
+    def __init__(self, value: SensitiveType) -> None:
+        self._value = value
 
     def reveal(self) -> SensitiveType:
         return self._value
@@ -66,3 +67,25 @@ class RedactingFilter(logging.Filter):
         if record.stack_info:
             record.stack_info = self._redactor.redact(record.stack_info)
         return True
+
+
+def install_redacting_filter(
+    logger: logging.Logger,
+    redactor: Redactor,
+) -> None:
+    """Install the current redactor on every handler effective for this logger."""
+
+    current: logging.Logger | None = logger
+    visited_handlers: set[int] = set()
+    while current is not None:
+        for handler in current.handlers:
+            if id(handler) in visited_handlers:
+                continue
+            visited_handlers.add(id(handler))
+            for installed_filter in tuple(handler.filters):
+                if isinstance(installed_filter, RedactingFilter):
+                    handler.removeFilter(installed_filter)
+            handler.addFilter(RedactingFilter(redactor))
+        if not current.propagate:
+            break
+        current = current.parent

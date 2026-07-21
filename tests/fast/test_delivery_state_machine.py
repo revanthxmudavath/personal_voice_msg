@@ -9,13 +9,53 @@ from threading import Barrier
 import pytest
 
 from personal_voice_msg.database import Database, InvalidTransition, MessageState
+from personal_voice_msg.history import MessageHistory
 
 NOW = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
 RECIPIENT = "recipient_staging_test"
+QUEUE_TEXTS = (
+    "Alpha.",
+    "Bravo.",
+    "Charlie.",
+    "Delta.",
+    "Echo.",
+    "Foxtrot.",
+    "Golf.",
+    "Hotel.",
+    "India.",
+    "Juliet.",
+    "Kilo.",
+    "Lima.",
+    "Mike.",
+    "November.",
+    "Oscar.",
+    "Papa.",
+    "Quebec.",
+    "Romeo.",
+    "Sierra.",
+    "Tango.",
+    "Uniform.",
+    "Victor.",
+    "Whiskey.",
+    "Xray.",
+    "Yankee.",
+    "Zulu.",
+    "Orchid.",
+    "Sunrise.",
+    "Velvet.",
+    "Quartz.",
+)
+
+
+def record_message(database: Database, text: str, now: datetime = NOW) -> int:
+    decision = MessageHistory(database).evaluate_and_record(text, now)
+    assert decision.accepted
+    assert decision.recorded_message_id is not None
+    return decision.recorded_message_id
 
 
 def queue_message(database: Database, text: str, now: datetime = NOW) -> int:
-    message_id = database.create_message(text, now)
+    message_id = record_message(database, text, now)
     for state in (
         MessageState.VALIDATED,
         MessageState.APPROVED,
@@ -68,7 +108,7 @@ def test_message_state_is_persisted_after_each_restart(tmp_path: Path) -> None:
     database_path = tmp_path / "state.sqlite3"
     database = Database(database_path)
     database.migrate()
-    message_id = database.create_message("A warm original sentence.", NOW)
+    message_id = record_message(database, "A warm original sentence.")
 
     assert (
         Database(database_path).get_message_state(message_id) is MessageState.DISCOVERED
@@ -111,7 +151,7 @@ def test_message_state_is_persisted_after_each_restart(tmp_path: Path) -> None:
 def test_message_transitions_reject_skips_and_backwards_moves(tmp_path: Path) -> None:
     database = Database(tmp_path / "state.sqlite3")
     database.migrate()
-    message_id = database.create_message("A warm original sentence.", NOW)
+    message_id = record_message(database, "A warm original sentence.")
 
     with pytest.raises(InvalidTransition):
         database.transition_message(message_id, MessageState.APPROVED, NOW)
@@ -228,8 +268,8 @@ def test_thirty_dates_have_one_atomic_reservation_without_reusing_messages(
     database_path = tmp_path / "state.sqlite3"
     database = Database(database_path)
     database.migrate()
-    for index in range(30):
-        queue_message(database, f"Original queued sentence {index}.")
+    for text in QUEUE_TEXTS:
+        queue_message(database, text)
 
     start_date = date(2026, 7, 18)
     reserved_message_ids: list[int] = []

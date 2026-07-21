@@ -31,6 +31,9 @@ never accepted as command-line values.
 Development, staging, and production recipients are profile-bound. A process
 fails closed if settings are missing or unknown, a secret path escapes its
 configured root, or recipient data belongs to a different profile.
+Staging and production also reject a secret root inside the configuration
+directory; development alone may use a bounded relative root. Runtime
+entrypoints must install the centralized redacting filter on every log handler.
 
 ## SQLite state boundary
 
