@@ -302,7 +302,7 @@ def test_v1_migration_backfills_history_without_changing_message_text(
             "WHERE message_history_fts MATCH 'gentle'"
         ).fetchone()
 
-    assert versions == [(1,), (2,), (3,)]
+    assert versions == [(1,), (2,), (3,), (4,)]
     assert message == (text, "sent")
     assert history_row is not None
     assert history_row[0] == message_id

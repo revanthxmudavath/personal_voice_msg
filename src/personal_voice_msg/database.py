@@ -8,8 +8,15 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import cast
 
 from personal_voice_msg.normalization import normalized_hash
+from personal_voice_msg.scheduling import (
+    ScheduleKind,
+    TriggerStatus,
+    classify_trigger,
+    planned_triggers_for_date,
+)
 
 
 class MessageState(StrEnum):
@@ -23,6 +30,11 @@ class MessageState(StrEnum):
     SENT = "sent"
     FAILED = "failed"
     DELIVERY_UNKNOWN = "delivery_unknown"
+
+
+class DailyRunState(StrEnum):
+    CLAIMED = "claimed"
+    COMPLETED = "completed"
 
 
 CONTENT_TRANSITIONS = {
@@ -46,7 +58,7 @@ ALL_STATES_SQL = ", ".join(f"'{state.value}'" for state in MessageState)
 DELIVERY_STATES_SQL = ", ".join(
     f"'{state.value}'" for state in DELIVERY_TRANSITIONS
 )
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 OPAQUE_RECIPIENT_KEY = re.compile(r"recipient_[A-Za-z0-9][A-Za-z0-9_-]{2,119}")
 
 
@@ -77,6 +89,16 @@ class Reservation:
     recipient_key: str
     pacific_date: date
     state: MessageState
+
+
+@dataclass(frozen=True, slots=True)
+class DailyRun:
+    run_id: int
+    recipient_key: str
+    pacific_date: date
+    state: DailyRunState
+    started_at: datetime
+    finished_at: datetime | None
 
 
 SCHEMA_V1_STATEMENTS = (
@@ -202,6 +224,23 @@ SCHEMA_V3_STATEMENTS = (
     ON message_history(normalized_hash)
     """,
 )
+SCHEMA_V4_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS daily_runs (
+        id INTEGER PRIMARY KEY,
+        recipient_key TEXT NOT NULL,
+        pacific_date TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('claimed', 'completed')),
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        UNIQUE (recipient_key, pacific_date),
+        CHECK (
+            (state = 'claimed' AND finished_at IS NULL)
+            OR (state = 'completed' AND finished_at IS NOT NULL)
+        )
+    )
+    """,
+)
 EXPECTED_SCHEMA_V1_OBJECTS = {
     ("table", "schema_migrations"): SCHEMA_V1_STATEMENTS[0],
     ("table", "sources"): SCHEMA_V1_STATEMENTS[1],
@@ -229,12 +268,28 @@ EXPECTED_SCHEMA_V3_OBJECTS = {
         "message_history_normalized_hash_unique_idx",
     ): SCHEMA_V3_STATEMENTS[0],
 }
+EXPECTED_SCHEMA_V4_OBJECTS = {
+    **EXPECTED_SCHEMA_V3_OBJECTS,
+    ("table", "daily_runs"): SCHEMA_V4_STATEMENTS[0],
+}
 
 
 def _timestamp(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("timestamp must be timezone-aware")
     return value.astimezone(UTC).isoformat()
+
+
+def _daily_run_from_row(row: sqlite3.Row | tuple[object, ...]) -> DailyRun:
+    finished_at = None if row[5] is None else datetime.fromisoformat(str(row[5]))
+    return DailyRun(
+        run_id=cast(int, row[0]),
+        recipient_key=str(row[1]),
+        pacific_date=date.fromisoformat(str(row[2])),
+        state=DailyRunState(str(row[3])),
+        started_at=datetime.fromisoformat(str(row[4])),
+        finished_at=finished_at,
+    )
 
 
 def _migration_versions(connection: sqlite3.Connection) -> set[int]:
@@ -314,13 +369,25 @@ class Database:
         connection = self.connect()
         try:
             versions = _migration_versions(connection)
-            if versions not in (set(), {1}, {1, 2}, {1, 2, CURRENT_SCHEMA_VERSION}):
+            if versions not in (
+                set(),
+                {1},
+                {1, 2},
+                {1, 2, 3},
+                {1, 2, 3, CURRENT_SCHEMA_VERSION},
+            ):
                 raise MigrationError("database has an unknown migration version")
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(SCHEMA_V1_STATEMENTS[0])
             versions = _migration_versions(connection)
-            if versions not in (set(), {1}, {1, 2}, {1, 2, CURRENT_SCHEMA_VERSION}):
+            if versions not in (
+                set(),
+                {1},
+                {1, 2},
+                {1, 2, 3},
+                {1, 2, 3, CURRENT_SCHEMA_VERSION},
+            ):
                 raise MigrationError("database has an unknown migration version")
             if not versions:
                 for statement in SCHEMA_V1_STATEMENTS[1:]:
@@ -363,10 +430,20 @@ class Database:
                     ) from None
                 connection.execute(
                     "INSERT INTO schema_migrations (version) VALUES (?)",
+                    (3,),
+                )
+                versions = {1, 2, 3}
+
+            _validate_schema(connection, EXPECTED_SCHEMA_V3_OBJECTS)
+            if versions == {1, 2, 3}:
+                for statement in SCHEMA_V4_STATEMENTS:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?)",
                     (CURRENT_SCHEMA_VERSION,),
                 )
 
-            _validate_schema(connection, EXPECTED_SCHEMA_V3_OBJECTS)
+            _validate_schema(connection, EXPECTED_SCHEMA_V4_OBJECTS)
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -377,6 +454,123 @@ class Database:
     def create_message(self, text: str, now: datetime) -> int:
         with self._transaction() as connection:
             return self.create_message_in_transaction(connection, text, now)
+
+    def claim_daily_run(
+        self,
+        recipient_key: str,
+        pacific_date: date,
+        now: datetime,
+    ) -> DailyRun | None:
+        if not OPAQUE_RECIPIENT_KEY.fullmatch(recipient_key):
+            raise ValueError("recipient key must be an opaque identifier")
+        if not isinstance(pacific_date, date) or isinstance(pacific_date, datetime):
+            raise ValueError("Pacific date must be a date without a time")
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            existing = connection.execute(
+                """
+                SELECT 1 FROM daily_runs
+                WHERE recipient_key = ? AND pacific_date = ?
+                """,
+                (recipient_key, pacific_date.isoformat()),
+            ).fetchone()
+            if existing is not None:
+                return None
+            prepare_trigger = next(
+                trigger
+                for trigger in planned_triggers_for_date(pacific_date)
+                if trigger.kind is ScheduleKind.DAILY_PREPARE
+            )
+            if classify_trigger(prepare_trigger, now) is not TriggerStatus.DUE:
+                raise ValueError(
+                    "daily run can only be claimed in the prepare window"
+                )
+            row = connection.execute(
+                """
+                INSERT INTO daily_runs (
+                    recipient_key,
+                    pacific_date,
+                    state,
+                    started_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (recipient_key, pacific_date) DO NOTHING
+                RETURNING id, recipient_key, pacific_date, state,
+                          started_at, finished_at
+                """,
+                (
+                    recipient_key,
+                    pacific_date.isoformat(),
+                    DailyRunState.CLAIMED.value,
+                    timestamp,
+                ),
+            ).fetchone()
+        return None if row is None else _daily_run_from_row(row)
+
+    def get_daily_run(
+        self,
+        recipient_key: str,
+        pacific_date: date,
+    ) -> DailyRun | None:
+        if not OPAQUE_RECIPIENT_KEY.fullmatch(recipient_key):
+            raise ValueError("recipient key must be an opaque identifier")
+        if not isinstance(pacific_date, date) or isinstance(pacific_date, datetime):
+            raise ValueError("Pacific date must be a date without a time")
+        connection = self.connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT id, recipient_key, pacific_date, state,
+                       started_at, finished_at
+                FROM daily_runs
+                WHERE recipient_key = ? AND pacific_date = ?
+                """,
+                (recipient_key, pacific_date.isoformat()),
+            ).fetchone()
+        finally:
+            connection.close()
+        return None if row is None else _daily_run_from_row(row)
+
+    def complete_daily_run(self, run_id: int, now: datetime) -> DailyRun:
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT id, recipient_key, pacific_date, state,
+                       started_at, finished_at
+                FROM daily_runs
+                WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise RecordNotFound("daily run does not exist")
+            if DailyRunState(str(row[3])) is not DailyRunState.CLAIMED:
+                raise InvalidTransition("daily run is already completed")
+            updated = connection.execute(
+                """
+                UPDATE daily_runs
+                SET state = ?, finished_at = ?
+                WHERE id = ? AND state = ?
+                """,
+                (
+                    DailyRunState.COMPLETED.value,
+                    timestamp,
+                    run_id,
+                    DailyRunState.CLAIMED.value,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise DatabaseInvariantError("daily run state changed concurrently")
+            completed_row = (
+                row[0],
+                row[1],
+                row[2],
+                DailyRunState.COMPLETED.value,
+                row[4],
+                timestamp,
+            )
+        return _daily_run_from_row(completed_row)
 
     def create_message_in_transaction(
         self,
