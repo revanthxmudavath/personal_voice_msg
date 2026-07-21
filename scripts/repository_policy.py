@@ -35,9 +35,9 @@ SENSITIVE_ARTIFACT_SUFFIXES = {
     ".embedding",
     ".key",
     ".p12",
-    ".pem",
     ".pfx",
 }
+DOCUMENTATION_SUFFIXES = {".json", ".md", ".toml", ".txt", ".yaml", ".yml"}
 
 
 def repository_files(root: Path, suffixes: set[str] | None = None) -> Iterable[Path]:
@@ -149,6 +149,10 @@ def check_mocks(root: Path) -> list[str]:
                     )
                     and (
                         (
+                            isinstance(node.func, ast.Name)
+                            and node.func.id == "__import__"
+                        )
+                        or (
                             isinstance(node.func, ast.Attribute)
                             and node.func.attr == "import_module"
                             and isinstance(node.func.value, ast.Name)
@@ -160,7 +164,14 @@ def check_mocks(root: Path) -> list[str]:
                         )
                     )
                 )
-                prohibited = dynamic_pytest_access or dynamic_import
+                indirect_monkeypatch = (
+                    module_name == "monkeypatch"
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in {"getfixturevalue", "usefixtures"}
+                )
+                prohibited = (
+                    dynamic_pytest_access or dynamic_import or indirect_monkeypatch
+                )
 
             if prohibited:
                 violations.append(
@@ -190,8 +201,9 @@ def check_secrets(root: Path) -> list[str]:
     violations: list[str] = []
     for path in repository_files(root):
         filename = path.name.casefold()
-        documented_example = ".example." in filename or filename.endswith(
-            ".example"
+        documented_example = filename.endswith(".example") or any(
+            filename.endswith(f".example{suffix}")
+            for suffix in DOCUMENTATION_SUFFIXES
         )
         sensitive_filename = (
             filename in SENSITIVE_ARTIFACT_NAMES
@@ -205,16 +217,36 @@ def check_secrets(root: Path) -> list[str]:
             )
             continue
         try:
-            if path.stat().st_size > 1_000_000:
-                continue
-            content = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            content_bytes = path.read_bytes()
+        except OSError:
+            violations.append(
+                f"file cannot be scanned for secrets: {display_path(path, root)}"
+            )
             continue
-        if GITHUB_TOKEN.search(content):
+        decoded_content: list[str] = []
+        try:
+            decoded_content.append(content_bytes.decode("utf-8"))
+        except UnicodeDecodeError:
+            pass
+        has_utf16_shape = b"\x00" in content_bytes or content_bytes.startswith(
+            (b"\xff\xfe", b"\xfe\xff")
+        )
+        if has_utf16_shape:
+            for encoding in ("utf-16", "utf-16-le", "utf-16-be"):
+                try:
+                    decoded_content.append(content_bytes.decode(encoding))
+                except UnicodeDecodeError:
+                    continue
+        if not decoded_content:
+            violations.append(
+                f"file cannot be scanned for secrets: {display_path(path, root)}"
+            )
+            continue
+        if any(GITHUB_TOKEN.search(content) for content in decoded_content):
             violations.append(
                 f"credential detected: {display_path(path, root)}"
             )
-        if PRIVATE_KEY.search(content):
+        if any(PRIVATE_KEY.search(content) for content in decoded_content):
             violations.append(
                 f"private key detected: {display_path(path, root)}"
             )

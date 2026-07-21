@@ -128,6 +128,29 @@ def test_mock_scan_rejects_dynamic_mock_access(tmp_path: Path, source: str) -> N
 
 
 @pytest.mark.fast
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import pytest\npytestmark = pytest.mark.usefixtures('monkeypatch')\n",
+        "def test_case(request):\n    request.getfixturevalue('monkeypatch')\n",
+        "mock_module = __import__('unittest.mock')\n",
+    ],
+    ids=("usefixtures", "getfixturevalue", "dunder-import"),
+)
+def test_mock_scan_rejects_indirect_monkeypatch_and_mock_access(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    planted = tmp_path / "tests" / "test_indirect_mock.py"
+    planted.parent.mkdir()
+    planted.write_text(source, encoding="utf-8")
+
+    result = run_policy(tmp_path, "mocks")
+
+    assert_failed_with(result, "mock", "test_indirect_mock.py")
+
+
+@pytest.mark.fast
 @pytest.mark.parametrize("lock_state", ["missing", "stale"])
 def test_lockfile_check_rejects_missing_or_stale_lock(
     tmp_path: Path, lock_state: str
@@ -218,6 +241,61 @@ def test_secret_scan_rejects_private_key_content(tmp_path: Path) -> None:
     result = run_policy(tmp_path, "secrets")
 
     assert_failed_with(result, "private key", "deployment-notes.txt")
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-16-be"])
+def test_secret_scan_rejects_utf16_private_key_content(
+    tmp_path: Path,
+    encoding: str,
+) -> None:
+    planted = tmp_path / "deployment-notes.bin"
+    planted.write_text(
+        "-----BEGIN " + "PRIVATE KEY-----\nnot-a-real-key\n",
+        encoding=encoding,
+    )
+
+    result = run_policy(tmp_path, "secrets")
+
+    assert_failed_with(result, "private key", "deployment-notes.bin")
+
+
+@pytest.mark.fast
+def test_secret_scan_rejects_credential_after_one_megabyte(tmp_path: Path) -> None:
+    planted = tmp_path / "large-notes.txt"
+    planted.write_text(
+        "x" * 1_000_001 + "\ntoken=gh" + "p_abcdefghijklmnopqrstuvwxyz1234567890\n",
+        encoding="utf-8",
+    )
+
+    result = run_policy(tmp_path, "secrets")
+
+    assert_failed_with(result, "credential", "large-notes.txt")
+
+
+@pytest.mark.fast
+def test_secret_scan_rejects_example_infix_before_sensitive_suffix(
+    tmp_path: Path,
+) -> None:
+    planted = tmp_path / "owner.example.embedding"
+    planted.write_bytes(b"\x00\x01private-voice-vector\xff")
+
+    result = run_policy(tmp_path, "secrets")
+
+    assert_failed_with(result, "sensitive artifact", planted.name)
+
+
+@pytest.mark.fast
+def test_secret_scan_allows_public_certificate_pem(tmp_path: Path) -> None:
+    planted = tmp_path / "test-certificate.pem"
+    planted.write_text(
+        "-----BEGIN CERTIFICATE-----\nnot-a-real-public-certificate\n",
+        encoding="utf-8",
+    )
+
+    result = run_policy(tmp_path, "secrets")
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.fast
