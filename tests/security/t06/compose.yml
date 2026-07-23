@@ -1,0 +1,129 @@
+services:
+  public-fixture:
+    build:
+      context: ../../..
+      dockerfile: tests/security/t06/Dockerfile
+    command: ["python", "tests/security/t06/fixture_server.py"]
+    environment:
+      FIXTURE_MODE: public
+      FIXTURE_TLS: trusted
+    networks:
+      public-web:
+        ipv4_address: 93.184.216.10
+        aliases:
+          - public.fixture.example
+          - wrong.fixture.example
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1/health', timeout=1).read()",
+        ]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  untrusted-fixture:
+    build:
+      context: ../../..
+      dockerfile: tests/security/t06/Dockerfile
+    command: ["python", "tests/security/t06/fixture_server.py"]
+    environment:
+      FIXTURE_MODE: public
+      FIXTURE_TLS: untrusted
+    networks:
+      public-web:
+        ipv4_address: 93.184.216.11
+        aliases:
+          - untrusted.fixture.example
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1/health', timeout=1).read()",
+        ]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  private-canary:
+    build:
+      context: ../../..
+      dockerfile: tests/security/t06/Dockerfile
+    command: ["python", "tests/security/t06/fixture_server.py"]
+    environment:
+      FIXTURE_MODE: canary
+    networks:
+      private-services:
+        ipv4_address: 10.66.0.10
+        aliases:
+          - private.fixture.example
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1/count', timeout=1).read()",
+        ]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  runner:
+    build:
+      context: ../../..
+      dockerfile: tests/security/t06/Dockerfile
+    command:
+      [
+        "python",
+        "-m",
+        "pytest",
+        "tests/security/test_web_fetcher_network.py",
+        "-q",
+      ]
+    depends_on:
+      public-fixture:
+        condition: service_healthy
+      private-canary:
+        condition: service_healthy
+      untrusted-fixture:
+        condition: service_healthy
+    environment:
+      ALL_PROXY: http://private.fixture.example/
+      HTTP_PROXY: http://private.fixture.example/
+      HTTPS_PROXY: http://private.fixture.example/
+      NO_PROXY: ""
+      SSL_CERT_FILE: /workspace/tls/ca.crt
+      T06_NETWORK_HARNESS: "1"
+    extra_hosts:
+      - "mixed.fixture.example.=93.184.216.10"
+      - "mixed.fixture.example.=10.66.0.10"
+      - "rebind.fixture.example.=93.184.216.10"
+    networks:
+      - public-web
+      - private-services
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  public-web:
+    internal: true
+    ipam:
+      config:
+        - subnet: 93.184.216.0/24
+  private-services:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.66.0.0/24
