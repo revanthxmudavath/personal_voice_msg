@@ -12,6 +12,7 @@ from typing import cast
 
 from personal_voice_msg.normalization import normalized_hash
 from personal_voice_msg.scheduling import (
+    PACIFIC,
     ScheduleKind,
     TriggerStatus,
     classify_trigger,
@@ -548,6 +549,11 @@ class Database:
             if completed_at < started_at:
                 raise ValueError(
                     "daily run completion cannot be before its start"
+                )
+            pacific_date = date.fromisoformat(str(row[2]))
+            if completed_at.astimezone(PACIFIC).date() != pacific_date:
+                raise ValueError(
+                    "daily run completion must be on its Pacific date"
                 )
             updated = connection.execute(
                 """

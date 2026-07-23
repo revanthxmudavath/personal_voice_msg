@@ -298,6 +298,55 @@ def test_completion_before_daily_run_start_leaves_claim_unfinished(
 
 
 @pytest.mark.fast
+def test_completion_on_a_later_pacific_date_leaves_claim_unfinished(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "next-day-completion.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    claimed = database.claim_daily_run(RECIPIENT, PACIFIC_DATE, NOW)
+    assert claimed is not None
+
+    with pytest.raises(ValueError, match="Pacific date"):
+        database.complete_daily_run(
+            claimed.run_id,
+            datetime(2026, 7, 21, 7, 0, tzinfo=UTC),
+        )
+
+    assert Database(database_path).get_daily_run(RECIPIENT, PACIFIC_DATE) == claimed
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "completed_at",
+    [
+        datetime(2026, 7, 21, 6, 30, tzinfo=UTC),
+        datetime(2026, 7, 21, 6, 30, tzinfo=UTC).astimezone(
+            timezone(timedelta(hours=-4))
+        ),
+        datetime(2026, 7, 21, 6, 30, tzinfo=UTC).astimezone(
+            timezone(timedelta(hours=5, minutes=30))
+        ),
+    ],
+    ids=("utc", "negative-offset", "positive-offset"),
+)
+def test_completion_uses_pacific_date_not_utc_or_input_offset(
+    tmp_path: Path,
+    completed_at: datetime,
+) -> None:
+    database_path = tmp_path / "utc-next-date-completion.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    claimed = database.claim_daily_run(RECIPIENT, PACIFIC_DATE, NOW)
+    assert claimed is not None
+
+    completed = database.complete_daily_run(claimed.run_id, completed_at)
+
+    assert completed.pacific_date == PACIFIC_DATE
+    assert completed.finished_at == completed_at
+
+
+@pytest.mark.fast
 @pytest.mark.parametrize(
     "completed_at",
     [NOW, NOW + timedelta(microseconds=1)],

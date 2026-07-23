@@ -25,13 +25,14 @@ real implementations and protocol endpoints, never mocks.
 The non-secret TOML configuration contains only a runtime profile, a secret
 root, and relative secret-file names. Recipient data, WAHA tokens, the voice
 embedding, and WhatsApp session data must be provisioned outside the repository
-as root-owned files readable only by the intended service identity. They are
-never accepted as command-line values.
+as files readable only by the intended service identity. T02 validates the path
+boundary; T18 enforces deployed ownership and restrictive Unix modes. Secret
+values are never accepted as command-line values.
 
 Development, staging, and production recipients are profile-bound. A process
 fails closed if settings are missing or unknown, a secret path escapes its
 configured root, or recipient data belongs to a different profile.
-Staging and production also reject a secret root inside the configuration
+Staging and production also reject a secret root inside the project
 directory; development alone may use a bounded relative root. Runtime
 entrypoints must install the centralized redacting filter on every log handler.
 

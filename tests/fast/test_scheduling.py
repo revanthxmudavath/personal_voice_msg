@@ -194,6 +194,45 @@ def test_weekly_discovery_follows_pacific_dst(
 
 
 @pytest.mark.fast
+@pytest.mark.parametrize(
+    ("day", "scheduled_at", "cutoff_at"),
+    [
+        (
+            date(2026, 1, 5),
+            datetime(2026, 1, 5, 8, 0, tzinfo=UTC),
+            datetime(2026, 1, 6, 8, 0, tzinfo=UTC),
+        ),
+        (
+            date(2026, 7, 20),
+            datetime(2026, 7, 20, 7, 0, tzinfo=UTC),
+            datetime(2026, 7, 21, 7, 0, tzinfo=UTC),
+        ),
+    ],
+    ids=("pst-week", "pdt-week"),
+)
+def test_weekly_discovery_exact_boundaries_hold_in_pst_and_pdt(
+    day: date,
+    scheduled_at: datetime,
+    cutoff_at: datetime,
+) -> None:
+    trigger = trigger_for(day, ScheduleKind.WEEKLY_DISCOVERY)
+
+    assert trigger.scheduled_at == scheduled_at
+    assert trigger.cutoff_at == cutoff_at
+    assert [
+        classify_trigger(trigger, scheduled_at - timedelta(microseconds=1)),
+        classify_trigger(trigger, scheduled_at),
+        classify_trigger(trigger, cutoff_at - timedelta(microseconds=1)),
+        classify_trigger(trigger, cutoff_at),
+    ] == [
+        TriggerStatus.NOT_DUE,
+        TriggerStatus.DUE,
+        TriggerStatus.DUE,
+        TriggerStatus.MISSED,
+    ]
+
+
+@pytest.mark.fast
 def test_leap_year_has_exactly_one_daily_trigger_per_pacific_date() -> None:
     first_day = date(2028, 1, 1)
     days = [first_day + timedelta(days=offset) for offset in range(366)]
