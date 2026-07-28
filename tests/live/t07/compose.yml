@@ -1,0 +1,47 @@
+services:
+  searxng:
+    image: docker.io/searxng/searxng@sha256:d0aaeb14880e6e92bde1518fcc7261e995783367d63d95203383607bef9c6516
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+      SEARXNG_LIMITER: "false"
+      SEARXNG_SECRET: t07-live-qualification-only
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      - live-web
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  runner:
+    build:
+      context: ../../..
+      dockerfile: tests/live/t07/Dockerfile
+    command:
+      [
+        "python",
+        "-m",
+        "pytest",
+        "tests/live/test_discovery_baseline_live.py",
+        "-q",
+        "-s",
+        "-m",
+        "live",
+      ]
+    depends_on:
+      searxng:
+        condition: service_started
+    environment:
+      ALL_PROXY: ""
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      NO_PROXY: ""
+      SEARXNG_URL: http://searxng:8080
+      T07_LIVE_DISCOVERY: ${T07_LIVE_DISCOVERY:?Set T07_LIVE_DISCOVERY=1 to run public-web qualification}
+    networks:
+      - live-web
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  live-web:
+    driver: bridge

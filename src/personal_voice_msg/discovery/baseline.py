@@ -28,9 +28,9 @@ MAX_EXTRACTED_CHARACTERS = 100_000
 MIN_EXTRACTED_CHARACTERS = 40
 SEARCH_TIMEOUT_SECONDS = 10.0
 DISCOVERY_QUERIES = (
-    "site:gutenberg.org love tenderness affection",
-    "site:standardebooks.org love poetry tenderness",
-    "site:poets.org love tenderness imagery",
+    "!sp standardebooks.org ebooks love romance",
+    "!ws historic love poem song lyrics tenderness",
+    "!wq love affection kindness tenderness quotations",
 )
 
 
@@ -65,24 +65,26 @@ class SourceRule:
 
 CURATED_SOURCES = (
     SourceRule(
-        hostname="gutenberg.org",
-        rights_evidence=(
-            "Project Gutenberg publishes public-domain works for United States "
-            "readers; T08 must retain jurisdiction and item-specific uncertainty."
-        ),
-    ),
-    SourceRule(
         hostname="standardebooks.org",
         rights_evidence=(
-            "Standard Ebooks publishes United States public-domain editions; "
-            "T08 must retain jurisdiction and item-specific uncertainty."
+            "Standard Ebooks states that its editions are believed public domain "
+            "in the United States and its contributions are CC0; item-specific "
+            "rights remain unknown until T08 validates the page evidence."
         ),
     ),
     SourceRule(
-        hostname="poets.org",
+        hostname="en.wikisource.org",
         rights_evidence=(
-            "Publicly accessible Academy of American Poets page; copying rights "
-            "are not established and must remain unknown in T08."
+            "Wikisource content may be public domain or freely licensed; "
+            "item-specific rights remain unknown until T08 validates the page "
+            "evidence."
+        ),
+    ),
+    SourceRule(
+        hostname="en.wikiquote.org",
+        rights_evidence=(
+            "Wikiquote platform licensing does not establish rights in underlying "
+            "quotations; item-specific rights remain unknown."
         ),
     ),
 )
@@ -132,9 +134,16 @@ def _decode_plain_text(body: bytes) -> str | None:
         return None
 
 
-def _analyzer_accepts(analyzer: Callable[[str], None], text: str) -> bool:
+def _analyzer_accepts(
+    analyzer: Callable[[str, DiscoveryRecord], None],
+    text: str,
+    record: DiscoveryRecord,
+) -> bool:
     try:
-        analyzer_result = cast(Callable[[str], object], analyzer)(text)
+        analyzer_result = cast(
+            Callable[[str, DiscoveryRecord], object],
+            analyzer,
+        )(text, record)
     except MemoryError:
         raise
     except Exception:
@@ -201,7 +210,7 @@ def analyze_fetched_page(
     page: FetchedPage,
     retrieved_at: datetime,
     rules: Sequence[SourceRule],
-    analyzer: Callable[[str], None],
+    analyzer: Callable[[str, DiscoveryRecord], None],
 ) -> DiscoveryRecord:
     """Analyze extracted text transiently without returning or persisting it."""
 
@@ -242,18 +251,19 @@ def analyze_fetched_page(
     if not MIN_EXTRACTED_CHARACTERS <= len(text) <= MAX_EXTRACTED_CHARACTERS:
         raise DiscoveryExtractionError("page extraction failed")
 
-    try:
-        analyzer_accepted = _analyzer_accepts(analyzer, text)
-    finally:
-        del text
-    if not analyzer_accepted:
-        raise DiscoveryExtractionError("page extraction failed")
-    return DiscoveryRecord(
+    record = DiscoveryRecord(
         result_id=page.result_id,
         source_url=page.final_url,
         retrieved_at=retrieved_at.astimezone(UTC),
         rights_evidence=rule.rights_evidence,
     )
+    try:
+        analyzer_accepted = _analyzer_accepts(analyzer, text, record)
+    finally:
+        del text
+    if not analyzer_accepted:
+        raise DiscoveryExtractionError("page extraction failed")
+    return record
 
 
 class DeterministicDiscovery:
@@ -342,7 +352,7 @@ class DeterministicDiscovery:
     async def analyze_result(
         self,
         result_id: str,
-        analyzer: Callable[[str], None],
+        analyzer: Callable[[str, DiscoveryRecord], None],
     ) -> DiscoveryRecord:
         page = await self._web_session.fetch_public_page(result_id)
         retrieved_at = _capture_retrieval_time(self._clock)

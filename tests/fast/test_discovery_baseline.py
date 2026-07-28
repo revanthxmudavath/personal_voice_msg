@@ -3,16 +3,18 @@ from __future__ import annotations
 import asyncio
 import inspect
 import traceback
-from dataclasses import asdict
+from dataclasses import FrozenInstanceError, asdict
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
 from personal_voice_msg.discovery import baseline
 from personal_voice_msg.discovery.baseline import (
+    CURATED_SOURCES,
     DISCOVERY_QUERIES,
     DeterministicDiscovery,
     DiscoveryExtractionError,
+    DiscoveryRecord,
     DiscoverySearchError,
     SourceRule,
     analyze_fetched_page,
@@ -32,6 +34,11 @@ RULES = (
 )
 RETRIEVED_AT = datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
 DISTINCTIVE_PHRASE = "violet lanterns guarded the quiet harbor"
+EXPECTED_DISCOVERY_QUERIES = (
+    "!sp standardebooks.org ebooks love romance",
+    "!ws historic love poem song lyrics tenderness",
+    "!wq love affection kindness tenderness quotations",
+)
 
 
 class _PassageRepr:
@@ -43,12 +50,31 @@ class _PassageRepr:
 
 
 @pytest.mark.fast
-def test_discovery_queries_are_fixed_bounded_english_themes() -> None:
-    assert 1 <= len(DISCOVERY_QUERIES) <= 10
+def test_discovery_queries_are_fixed_bounded_and_target_curated_hosts() -> None:
+    assert DISCOVERY_QUERIES == EXPECTED_DISCOVERY_QUERIES
     assert len(set(DISCOVERY_QUERIES)) == len(DISCOVERY_QUERIES)
     assert all(
         query.isascii() and 1 <= len(query) <= 200 for query in DISCOVERY_QUERIES
     )
+    assert all("site:" not in query.casefold() for query in DISCOVERY_QUERIES)
+    assert DISCOVERY_QUERIES[0].startswith("!sp ")
+    assert DISCOVERY_QUERIES[1].startswith("!ws ")
+    assert DISCOVERY_QUERIES[2].startswith("!wq ")
+
+
+@pytest.mark.fast
+def test_curated_source_evidence_never_certifies_item_rights() -> None:
+    assert tuple(rule.hostname for rule in CURATED_SOURCES) == (
+        "standardebooks.org",
+        "en.wikisource.org",
+        "en.wikiquote.org",
+    )
+
+    for rule in CURATED_SOURCES:
+        evidence = rule.rights_evidence.casefold()
+        assert "item-specific" in evidence
+        assert "unknown" in evidence
+        assert "certif" not in evidence
 
 
 @pytest.mark.fast
@@ -141,33 +167,61 @@ def test_analyzer_output_cannot_escape_the_discovery_boundary() -> None:
             b"</p></main></body></html>"
         ),
     )
+    analyzer_calls: list[DiscoveryRecord] = []
+
+    def return_text(text: str, record: DiscoveryRecord) -> object:
+        analyzer_calls.append(record)
+        return text
+
+    def return_mapping(text: str, record: DiscoveryRecord) -> object:
+        analyzer_calls.append(record)
+        return {"passage": text}
+
+    def return_object(text: str, record: DiscoveryRecord) -> object:
+        analyzer_calls.append(record)
+        return _PassageRepr(text)
+
+    def return_nested(text: str, record: DiscoveryRecord) -> object:
+        analyzer_calls.append(record)
+        return {"nested": [{"passage": text}] * 10_000}
+
     adversarial_analyzers = (
-        lambda text: text,
-        lambda text: {"passage": text},
-        lambda text: _PassageRepr(text),
-        lambda text: {"nested": [{"passage": text}] * 10_000},
+        return_text,
+        return_mapping,
+        return_object,
+        return_nested,
     )
 
     for analyzer in adversarial_analyzers:
+        call_count = len(analyzer_calls)
         with pytest.raises(DiscoveryExtractionError) as raised:
             analyze_fetched_page(page, RETRIEVED_AT, RULES, analyzer)
+        assert len(analyzer_calls) == call_count + 1
         assert str(raised.value) == "page extraction failed"
         assert DISTINCTIVE_PHRASE not in str(raised.value)
         assert DISTINCTIVE_PHRASE not in repr(raised.value)
 
-    def leaking_exception(text: str) -> None:
-        raise ValueError(text)
+    exception_calls: list[DiscoveryRecord] = []
+
+    def leaking_exception(text: str, record: DiscoveryRecord) -> None:
+        exception_calls.append(record)
+        raise ValueError(
+            f"{text} {record.source_url} {record.rights_evidence}"
+        )
 
     with pytest.raises(DiscoveryExtractionError) as raised:
         analyze_fetched_page(page, RETRIEVED_AT, RULES, leaking_exception)
+    assert len(exception_calls) == 1
     assert str(raised.value) == "page extraction failed"
     assert DISTINCTIVE_PHRASE not in repr(raised.value)
+    assert exception_calls[0].source_url not in repr(raised.value)
+    assert exception_calls[0].rights_evidence not in repr(raised.value)
 
     record = analyze_fetched_page(
         page,
         RETRIEVED_AT,
         RULES,
-        lambda text: None,
+        lambda text, provenance: None,
     )
     assert not hasattr(record, "analysis")
     assert DISTINCTIVE_PHRASE not in repr(record)
@@ -188,12 +242,18 @@ def test_analyzer_exception_discards_the_raw_exception_chain() -> None:
         ),
     )
 
-    def leaking_exception(text: str) -> None:
-        raise ValueError(text)
+    analyzer_calls: list[DiscoveryRecord] = []
+
+    def leaking_exception(text: str, record: DiscoveryRecord) -> None:
+        analyzer_calls.append(record)
+        raise ValueError(
+            f"{text} {record.source_url} {record.rights_evidence}"
+        )
 
     with pytest.raises(DiscoveryExtractionError) as raised:
         analyze_fetched_page(page, RETRIEVED_AT, RULES, leaking_exception)
 
+    assert len(analyzer_calls) == 1
     exception = raised.value
     rendered_traceback = "".join(
         traceback.format_exception(
@@ -205,6 +265,8 @@ def test_analyzer_exception_discards_the_raw_exception_chain() -> None:
     assert exception.__cause__ is None
     assert exception.__context__ is None
     assert DISTINCTIVE_PHRASE not in rendered_traceback
+    assert analyzer_calls[0].source_url not in rendered_traceback
+    assert analyzer_calls[0].rights_evidence not in rendered_traceback
     assert str(exception) == "page extraction failed"
     assert repr(exception) == "DiscoveryExtractionError('page extraction failed')"
 
@@ -225,7 +287,7 @@ def test_plain_text_decode_exception_discards_the_raw_exception_chain() -> None:
             page,
             RETRIEVED_AT,
             RULES,
-            lambda text: None,
+            lambda text, record: None,
         )
 
     exception = raised.value
@@ -291,7 +353,12 @@ def test_retrieval_time_is_constructor_owned_and_normalized_to_utc() -> None:
         clock=counting_clock,
     )
     with pytest.raises(DiscoveryBoundaryError):
-        asyncio.run(discovery.analyze_result("fabricated-result-id", lambda text: None))
+        asyncio.run(
+            discovery.analyze_result(
+                "fabricated-result-id",
+                lambda text, record: None,
+            )
+        )
     assert clock_calls == []
 
 
@@ -311,12 +378,21 @@ def test_trafilatura_text_is_transient_and_not_returned_in_source_record() -> No
     )
 
     analysis_signals: dict[str, int] = {}
+    analyzer_records: list[DiscoveryRecord] = []
 
-    def analyze(text: str) -> None:
+    def analyze(text: str, record: DiscoveryRecord) -> None:
         analysis_signals["word_count"] = len(text.split())
+        analyzer_records.append(record)
+        assert record.result_id == page.result_id
+        assert record.source_url == page.final_url
+        assert record.retrieved_at == RETRIEVED_AT
+        assert record.rights_evidence == RULES[0].rights_evidence
+        with pytest.raises(FrozenInstanceError):
+            setattr(record, "result_id", "changed")
 
     record = analyze_fetched_page(page, RETRIEVED_AT, RULES, analyze)
 
+    assert analyzer_records == [record]
     assert record.result_id == "opaque-result-id"
     assert record.source_url == "https://public.fixture.example/article"
     assert record.retrieved_at == RETRIEVED_AT
@@ -343,7 +419,7 @@ def test_plain_text_uses_strict_bounded_decoding_and_normalized_lines() -> None:
         body=body,
     )
 
-    def analyze(text: str) -> None:
+    def analyze(text: str, record: DiscoveryRecord) -> None:
         assert text == (
             "Project Gutenberg EBook of A Gentle Story\n"
             "\n"
@@ -351,6 +427,10 @@ def test_plain_text_uses_strict_bounded_decoding_and_normalized_lines() -> None:
             "The violet lanterns guarded the quiet harbor through the warm night.\n"
             "*** END OF THE PROJECT GUTENBERG EBOOK A GENTLE STORY ***"
         )
+        assert record.result_id == page.result_id
+        assert record.source_url == page.final_url
+        assert record.retrieved_at == RETRIEVED_AT
+        assert record.rights_evidence == RULES[0].rights_evidence
         analyzed.append(True)
 
     record = analyze_fetched_page(page, RETRIEVED_AT, RULES, analyze)
@@ -375,7 +455,7 @@ def test_plain_text_uses_strict_bounded_decoding_and_normalized_lines() -> None:
                 invalid_page,
                 RETRIEVED_AT,
                 RULES,
-                lambda text: None,
+                lambda text, record: None,
             )
 
 
@@ -389,7 +469,12 @@ def test_extraction_failure_creates_no_source_record() -> None:
     )
 
     with pytest.raises(DiscoveryExtractionError, match="extraction failed"):
-        analyze_fetched_page(page, RETRIEVED_AT, RULES, lambda text: None)
+        analyze_fetched_page(
+            page,
+            RETRIEVED_AT,
+            RULES,
+            lambda text, record: None,
+        )
 
 
 @pytest.mark.fast
@@ -402,7 +487,12 @@ def test_redirect_to_non_curated_final_host_fails_closed() -> None:
     )
 
     with pytest.raises(DiscoveryExtractionError, match="extraction failed"):
-        analyze_fetched_page(page, RETRIEVED_AT, RULES, lambda text: None)
+        analyze_fetched_page(
+            page,
+            RETRIEVED_AT,
+            RULES,
+            lambda text, record: None,
+        )
 
 
 @pytest.mark.fast
@@ -415,4 +505,9 @@ def test_extraction_rechecks_the_fetched_media_type() -> None:
     )
 
     with pytest.raises(DiscoveryExtractionError, match="extraction failed"):
-        analyze_fetched_page(page, RETRIEVED_AT, RULES, lambda text: None)
+        analyze_fetched_page(
+            page,
+            RETRIEVED_AT,
+            RULES,
+            lambda text, record: None,
+        )

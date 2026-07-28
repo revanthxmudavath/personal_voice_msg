@@ -1,0 +1,42 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - startpage
+      - wikiquote
+      - wikisource
+
+general:
+  debug: false
+  instance_name: "T07 live qualification"
+
+search:
+  safe_search: 2
+  default_lang: "en"
+  languages:
+    - en
+  formats:
+    - json
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "t07-live-qualification-only"
+  limiter: false
+  image_proxy: false
+
+outgoing:
+  useragent_suffix: >-
+    personal-voice-message-bot/0.1
+    (https://github.com/revanthxmudavath)
+  request_timeout: 6.0
+  max_request_timeout: 8.0
+  pool_connections: 10
+  pool_maxsize: 5
+
+engines:
+  - name: startpage
+    disabled: false
+  - name: wikiquote
+    disabled: false
+  - name: wikisource
+    disabled: false

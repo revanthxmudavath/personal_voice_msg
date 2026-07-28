@@ -34,7 +34,9 @@ Confirmed state as of 2026-07-23:
   implementation commit `2e86b91` was merged by PR #4.
 - The workspace can edit the repository and `git status` works.
 - The repository has a credential-free HTTPS `origin` remote.
-- GitHub CLI authentication for `revanthxmudavath` succeeds.
+- GitHub CLI authentication for `revanthxmudavath` succeeds outside the
+  workspace sandbox; a sandboxed `gh auth status` may falsely report the
+  keyring token as invalid.
 - Docker Desktop is running and `docker info` succeeds.
 - Python 3.12.4, `uv`, Git, and Node 22 are installed.
 - FFmpeg and ffprobe are not installed; they are required before T14.

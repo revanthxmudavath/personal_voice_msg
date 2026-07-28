@@ -12,6 +12,7 @@ import pytest
 from personal_voice_msg.discovery.baseline import (
     DISCOVERY_QUERIES,
     DeterministicDiscovery,
+    DiscoveryRecord,
     SourceRule,
 )
 from personal_voice_msg.discovery.web import DiscoveryWebSession
@@ -84,9 +85,11 @@ def test_real_searxng_result_flows_through_result_id_to_trafilatura(
 
         analysis_signals: dict[str, bool | int] = {}
 
-        def analyze(text: str) -> None:
+        def analyze(text: str, record: DiscoveryRecord) -> None:
             analysis_signals["word_count"] = len(text.split())
             analysis_signals["mentions_kindness"] = "Kindness" in text
+            assert record.result_id == results[0].result_id
+            assert record.source_url == "http://public.fixture.example/article"
 
         record = await discovery.analyze_result(results[0].result_id, analyze)
 

@@ -60,6 +60,10 @@ def test_fetches_public_fixture_without_ambient_proxy_or_netrc() -> None:
     assert b"host=public.fixture.example" in page.body
     assert b"authorization=\n" in page.body
     assert b"cookie=\n" in page.body
+    assert (
+        b"user-agent=personal-voice-message-bot/0.1 "
+        b"(https://github.com/revanthxmudavath)\n"
+    ) in page.body
 
 
 def test_controlled_tls_preserves_original_host_and_sni() -> None:

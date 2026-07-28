@@ -6,7 +6,7 @@ RUN mkdir -p /workspace/tls && \
     openssl req -x509 -newkey rsa:2048 -nodes \
       -keyout /workspace/tls/ca.key \
       -out /workspace/tls/ca.crt \
-      -days 2 -sha256 -subj "/CN=T06 Test CA" && \
+      -days 3650 -sha256 -subj "/CN=T06 Test CA" && \
     openssl req -newkey rsa:2048 -nodes \
       -keyout /workspace/tls/server.key \
       -out /workspace/tls/server.csr \
@@ -19,11 +19,11 @@ RUN mkdir -p /workspace/tls && \
       -CAkey /workspace/tls/ca.key \
       -CAcreateserial \
       -out /workspace/tls/server.crt \
-      -days 2 -sha256 -extfile /workspace/tls/server.ext && \
+      -days 3650 -sha256 -extfile /workspace/tls/server.ext && \
     openssl req -x509 -newkey rsa:2048 -nodes \
       -keyout /workspace/tls/untrusted.key \
       -out /workspace/tls/untrusted.crt \
-      -days 2 -sha256 \
+      -days 3650 -sha256 \
       -subj "/CN=untrusted.fixture.example" \
       -addext "subjectAltName=DNS:untrusted.fixture.example" && \
     printf 'machine public.fixture.example\nlogin fixture\npassword fixture-only\n' \

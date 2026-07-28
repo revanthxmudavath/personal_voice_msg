@@ -424,7 +424,10 @@ async def _fetch_url(
                     headers={
                         "Accept": "text/html, application/xhtml+xml, text/plain",
                         "Accept-Encoding": "identity",
-                        "User-Agent": "personal-voice-msg/0.1",
+                        "User-Agent": (
+                            "personal-voice-message-bot/0.1 "
+                            "(https://github.com/revanthxmudavath)"
+                        ),
                     },
                     server_hostname=(
                         parsed.hostname if parsed.scheme == "https" else None

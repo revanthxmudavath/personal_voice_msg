@@ -50,6 +50,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 f"host={self.headers.get('Host', '')}\n"
                 f"authorization={self.headers.get('Authorization', '')}\n"
                 f"cookie={self.headers.get('Cookie', '')}\n"
+                f"user-agent={self.headers.get('User-Agent', '')}\n"
             ).encode()
             self._send(200, body, content_type="text/plain")
             return
