@@ -24,6 +24,7 @@ from personal_voice_msg.discovery.web import (
 )
 
 MAX_SEARCH_RESPONSE_BYTES = 1_048_576
+MAX_SEARCH_JSON_DEPTH = 64
 MAX_EXTRACTED_CHARACTERS = 100_000
 MIN_EXTRACTED_CHARACTERS = 40
 SEARCH_TIMEOUT_SECONDS = 10.0
@@ -134,6 +135,32 @@ def _decode_plain_text(body: bytes) -> str | None:
         return None
 
 
+def _json_structure_is_bounded(text: str) -> bool:
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "{[":
+            depth += 1
+            if depth > MAX_SEARCH_JSON_DEPTH:
+                return False
+        elif character in "}]":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0 and not in_string
+
+
 def _analyzer_accepts(
     analyzer: Callable[[str, DiscoveryRecord], None],
     text: str,
@@ -153,8 +180,14 @@ def _analyzer_accepts(
 
 def _decode_json(body: bytes) -> tuple[bool, object | None]:
     try:
-        decoded: object = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+        text = body.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return False, None
+    if not _json_structure_is_bounded(text):
+        return False, None
+    try:
+        decoded: object = json.loads(text)
+    except (ValueError, RecursionError):
         return False, None
     return True, decoded
 
