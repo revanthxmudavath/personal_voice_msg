@@ -66,3 +66,27 @@ from transient source text are always rejected by a separate deterministic
 check. Invisible Unicode format characters cannot bypass that comparison, and
 stored message text is immutable after its hash is recorded. Source passages
 and duplicate-comparison text are never written to logs.
+
+## Deterministic web discovery
+
+Discovery uses three fixed romantic-theme queries against a trusted private
+SearXNG service. Results are limited to a curated source list, deduplicated,
+and registered with the T06 web boundary. Callers receive sanitized metadata
+and opaque, single-use result IDs; they cannot submit a URL for fetching.
+
+Permitted pages are fetched through that result-ID boundary. Trafilatura
+extracts supported HTML content from the already-fetched bytes. Accepted plain
+text uses strict UTF-8 decoding, normalized line endings, control-character
+checks, and the same extracted-text limits.
+
+The raw page and extracted text stay transient during a trusted analyzer call.
+The analyzer must return `None`; any other result or ordinary analyzer failure
+rejects the page without retaining or formatting that value. A discovery
+record contains only its opaque result ID, source URL, authoritative UTC
+fetch-boundary time, and source-rights evidence. T08 will separately define the
+strict, no-source-passage InspirationCard transformation.
+
+This is deliberately a deterministic workflow, not an agent. T09 may expose
+the same fixed search and result-ID operations as restricted agent tools, but
+only if the agent benchmark beats this baseline without expanding its network
+capabilities.

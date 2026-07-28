@@ -1,0 +1,81 @@
+services:
+  public-fixture:
+    build:
+      context: ../../..
+      dockerfile: tests/integration/t07/Dockerfile
+    command: ["python", "tests/integration/t07/fixture_server.py"]
+    networks:
+      public-web:
+        ipv4_address: 93.184.216.10
+        aliases:
+          - public.fixture.example
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1/health', timeout=1).read()",
+        ]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  searxng:
+    image: docker.io/searxng/searxng@sha256:d0aaeb14880e6e92bde1518fcc7261e995783367d63d95203383607bef9c6516
+    depends_on:
+      public-fixture:
+        condition: service_healthy
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+      SEARXNG_LIMITER: "false"
+      SEARXNG_SECRET: t07-isolated-fixture-only
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      - trusted-services
+      - public-web
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  runner:
+    build:
+      context: ../../..
+      dockerfile: tests/integration/t07/Dockerfile
+    command:
+      [
+        "python",
+        "-m",
+        "pytest",
+        "tests/integration/test_discovery_baseline_network.py",
+        "-q",
+      ]
+    depends_on:
+      searxng:
+        condition: service_started
+    environment:
+      ALL_PROXY: http://unreachable.invalid/
+      HTTP_PROXY: http://unreachable.invalid/
+      HTTPS_PROXY: http://unreachable.invalid/
+      NO_PROXY: ""
+      SEARXNG_URL: http://searxng:8080
+      T07_NETWORK_HARNESS: "1"
+    networks:
+      - trusted-services
+      - public-web
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  trusted-services:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.67.0.0/24
+  public-web:
+    internal: true
+    ipam:
+      config:
+        - subnet: 93.184.216.0/24

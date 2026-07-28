@@ -1,0 +1,36 @@
+use_default_settings:
+  engines:
+    keep_only: []
+
+general:
+  debug: false
+  instance_name: "T07 isolated SearXNG"
+
+search:
+  safe_search: 2
+  default_lang: "en"
+  formats:
+    - json
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "t07-isolated-fixture-only"
+  limiter: false
+  image_proxy: false
+  method: "GET"
+
+engines:
+  - name: t07 fixture
+    engine: json_engine
+    shortcut: t07
+    categories:
+      - general
+    disabled: false
+    enable_http: true
+    paging: false
+    search_url: "http://public.fixture.example/engine?q={query}"
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
