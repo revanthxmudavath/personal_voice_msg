@@ -13,8 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
           python-version: "3.12"
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker compose -p personal-voice-msg-t06 -f tests/security/t06/compose.yml config --quiet
       - run: docker compose -p personal-voice-msg-t06 -f tests/security/t06/compose.yml up --build --abort-on-container-exit --exit-code-from runner
       - if: always()
@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker compose -p personal-voice-msg-t07 -f tests/integration/t07/compose.yml config --quiet
       - run: docker compose -p personal-voice-msg-t07 -f tests/integration/t07/compose.yml up --build --abort-on-container-exit --exit-code-from runner
       - if: always()
