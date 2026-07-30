@@ -27,13 +27,14 @@ Build a fully cloud-hosted service that:
 
 T01 through T09 are implemented and audited. T09 selected the deterministic
 T07 discovery fallback after the restricted LangChain/Gemini candidate failed
-the protocol and hostile-input security gates. T10 is the next backlog task,
-subject to its production inference-provider gate.
+the protocol and hostile-input security gates. The Gemini API project is
+owner-confirmed Tier 1 Postpay; T10 provider qualification is next.
 
 Confirmed state as of 2026-07-30:
 
 - Canonical implementation checkout: `F:\personal_voice_msg`.
-- T01 through T08 are implemented with task logs and pushed branches.
+- T01 through T09 are implemented with task logs; T09 completion commit
+  `45f492c` is on `origin/main`.
 - The corrected, equal-budget T09 benchmark used the frozen
   `t09-semantic-v2` corpus and independently observed corpus SHA-256
   `0b07ed96da644ff8b500dd2a45dc60565f586748a653df0c9727337949e0a636`.
@@ -49,13 +50,16 @@ Confirmed state as of 2026-07-30:
 - A future API-based discovery agent requires a plan amendment and a fresh,
   frozen, non-ceiling benchmark. It may not be prompt-tuned against the T09
   evaluation corpus.
+- The owner confirmed the Gemini API project as Tier 1 Postpay on 2026-07-30.
+  This satisfies the billing-plan prerequisite but does not approve private or
+  production inference or change the T09 no-retention decision.
 - The workspace can edit the repository and `git status` works.
 - The repository has a credential-free HTTPS `origin` remote.
 - GitHub CLI authentication for `revanthxmudavath` succeeds outside the
   workspace sandbox; a sandboxed `gh auth status` may falsely report the
   keyring token as invalid.
 - Docker Desktop is running and `docker info` succeeds.
-- Python 3.12.4, `uv`, Git, and Node 22 are installed.
+- Python 3.12.4, `uv`, Git, and Node 22.13 are installed.
 - FFmpeg and ffprobe are not installed; they are required before T14.
 
 Do not bypass the workspace sandbox or write repository files through shell
@@ -79,8 +83,9 @@ T00 is complete only when:
 - SearXNG and Trafilatura
 - deterministic T07 discovery selected for the current runtime
 - no retained runtime agent framework
-- production/private inference for T10 and T11 is blocked on a separate
-  paid-tier-or-approved-provider decision and requalification gate
+- Gemini API Tier 1 Postpay is eligible as the T10/T11 provider candidate;
+  private/production model, API, client, data-handling, reliability, and cost
+  qualification remains required
 - Pocket TTS for authorized voice embedding and synthesis
 - FFmpeg for OGG/Opus conversion and validation
 - WAHA Core behind a narrow internal sender
@@ -354,8 +359,9 @@ The project is complete only when:
 
 ## Immediate next step
 
-Begin T10 from the audited T01-T09 foundation. First verify the Gemini API
-project's Plan in Google AI Studio and explicitly select the private/production
-inference configuration. Upgrade Node from 22.13 to at least 22.22 before using
-the current Promptfoo release. Requalify the pinned provider, model, API, and
-client with real calls before accepting T10 output.
+Begin T10 from the audited T01-T09 foundation with the owner-confirmed Gemini
+API Tier 1 Postpay project as the provider candidate. Explicitly select and
+freeze the private/production model, API, client, and data-handling
+configuration. Upgrade Node from 22.13 to at least 22.22 before using the
+current Promptfoo release. Requalify the pins with real calls before accepting
+T10 output.

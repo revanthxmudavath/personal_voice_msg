@@ -1,7 +1,8 @@
 # Personal Voice Message Assistant — Implementation Plan
 
 Status: T01-T09 implemented and audited; T09 selected the deterministic
-discovery fallback; T10 is next after its production provider gate
+discovery fallback; Gemini API Tier 1 Postpay is confirmed and T10 provider
+qualification is next
 Primary repository target: `F:\personal_voice_msg`
 Delivery schedule: every day at 07:00 `America/Los_Angeles`
 Development method: agentic, test-driven, no mocked dependencies
@@ -25,7 +26,8 @@ No service must remain running on the owner's laptop.
 
 - Application-controlled code and components must be open source or openly
   licensed. The owner has approved Gemini as one additional proprietary
-  external dependency for the T09 benchmark only.
+  external dependency for the T09 benchmark and confirmed its API project as
+  a candidate for T10/T11 qualification. This is not production authorization.
 - WhatsApp, GitHub, and the cloud provider remain unavoidable proprietary external dependencies.
 - The voice clone may only use the owner's voice with explicit authorization.
 - A dedicated WhatsApp sending number is strongly recommended.
@@ -50,7 +52,7 @@ No service must remain running on the owner's laptop.
 | Runtime agent | None retained after the T09 candidate failed protocol and hostile-input gates |
 | Current discovery | Deterministic T07 predefined search workflow |
 | Future agent path | Separate API-based candidate behind the exact restricted tool boundary and a fresh frozen benchmark |
-| T10/T11 inference | Deferred: paid tier or another explicitly approved provider must pass a separate private-data and production requalification gate |
+| T10/T11 inference | Gemini API project is owner-confirmed Tier 1 Postpay; explicit production selection and pinned model/API/client, privacy, reliability, and cost qualification remain required |
 | Voice cloning | Pocket TTS voice embedding and synthesis |
 | Audio conversion | FFmpeg to OGG/Opus |
 | WhatsApp bridge | WAHA Core behind a narrow internal sender wrapper |
@@ -519,8 +521,9 @@ Evaluated implementation:
   reports Google AI Pro, but Google documents API billing and rate limits as
   properties of the API key's project and linked billing account; verify the
   project's Plan in Google AI Studio rather than inferring it from a consumer
-  subscription. Send only public-page excerpts bounded to at most 3,000
-  characters and synthetic message history.
+  subscription. The owner subsequently confirmed the API project as Tier 1
+  Postpay on 2026-07-30. Send only public-page excerpts bounded to at most
+  3,000 characters and synthetic message history.
   Keep the full extracted page text transient in host process memory solely
   for deterministic T08 source-copy validation, then discard it at run end.
   Never send private message history, recipient data, voice data, secrets, or
@@ -549,10 +552,10 @@ Decision benchmark:
   and Gemini-client dependencies introduced by T09 and retain deterministic
   T07.
 - T09 does not approve this Gemini configuration for T10 or T11. Those tasks
-  remain blocked until the API project is verified as Paid in Google AI Studio
-  or another provider is explicitly approved for private and production
-  inference, and the selected configuration passes data-handling, reliability,
-  cost, API, model, and client requalification.
+  require explicit private/production selection and data-handling,
+  reliability, cost, API, model, and client requalification. The
+  owner-confirmed Tier 1 Postpay status satisfies the billing-plan prerequisite
+  only.
 
 Final evidence and decision:
 
@@ -923,8 +926,9 @@ The project is complete only when:
 
 ## 13. Immediate next action
 
-Begin T10 from the audited T01-T09 foundation. Verify the Gemini API project's
-Plan in Google AI Studio and explicitly select the private/production inference
+Begin T10 from the audited T01-T09 foundation with the owner-confirmed Gemini
+API Tier 1 Postpay project as the provider candidate. Explicitly select and
+freeze the private/production model, API, client, and data-handling
 configuration. Upgrade Node from 22.13 to at least 22.22 before installing the
-current Promptfoo release. Then freeze the T10 corpus and provider pins, write
-the failing generation-boundary tests, and qualify the real provider.
+current Promptfoo release. Then freeze the T10 corpus, write the failing
+generation-boundary tests, and qualify the real provider.
