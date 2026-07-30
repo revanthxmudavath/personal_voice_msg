@@ -66,21 +66,25 @@ def test_registered_sensitive_values_are_removed_from_formatted_log() -> None:
 @pytest.mark.fast
 def test_recognizable_token_and_phone_are_removed_without_registration() -> None:
     github_token = "gh" "p_1234567890abcdefghijklmnopqrstuvwxyz"
+    gemini_token = "AI" + "za" + ("A" * 35)
     phone = "+442079460123"
 
     rendered = render_log(
         Redactor(()),
-        "provider token=%s destination=%s result=%s",
+        "provider token=%s model_token=%s destination=%s result=%s",
         github_token,
+        gemini_token,
         phone,
         "rejected safely",
     )
 
     assert rendered == (
-        "provider token=[REDACTED] destination=[REDACTED] "
+        "provider token=[REDACTED] model_token=[REDACTED] "
+        "destination=[REDACTED] "
         "result=rejected safely"
     )
     assert github_token not in rendered
+    assert gemini_token not in rendered
     assert phone not in rendered
 
 
@@ -184,7 +188,7 @@ def test_install_redacting_filter_covers_propagated_parent_handler() -> None:
 
 
 @pytest.mark.fast
-def test_install_redacting_filter_replaces_obsolete_redactor() -> None:
+def test_install_redacting_filter_preserves_existing_sensitive_values() -> None:
     old_secret = "old-secret"
     new_secret = "new-secret"
     output = io.StringIO()
@@ -197,11 +201,11 @@ def test_install_redacting_filter_replaces_obsolete_redactor() -> None:
     try:
         redaction.install_redacting_filter(logger, Redactor((old_secret,)))
         redaction.install_redacting_filter(logger, Redactor((new_secret,)))
-        logger.info("secret=%s", new_secret)
+        logger.info("old=%s new=%s", old_secret, new_secret)
     finally:
         logger.removeHandler(handler)
         handler.close()
 
     filters = [item for item in handler.filters if isinstance(item, RedactingFilter)]
     assert len(filters) == 1
-    assert output.getvalue().strip() == "secret=[REDACTED]"
+    assert output.getvalue().strip() == "old=[REDACTED] new=[REDACTED]"

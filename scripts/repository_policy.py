@@ -23,6 +23,7 @@ EXCLUDED_DIRECTORIES = {
 GITHUB_TOKEN = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
 )
+GEMINI_API_KEY = re.compile(r"\bAIza[A-Za-z0-9_-]{30,}\b")
 PRIVATE_KEY = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----")
 SENSITIVE_ARTIFACT_NAMES = {
     "id_dsa",
@@ -210,6 +211,7 @@ def check_secrets(root: Path) -> list[str]:
             or path.suffix.casefold() in SENSITIVE_ARTIFACT_SUFFIXES
             or ("waha" in filename and "token" in filename)
             or ("waha" in filename and "session" in filename)
+            or ("gemini" in filename and ("key" in filename or "token" in filename))
         )
         if sensitive_filename and not documented_example:
             violations.append(
@@ -243,6 +245,10 @@ def check_secrets(root: Path) -> list[str]:
             )
             continue
         if any(GITHUB_TOKEN.search(content) for content in decoded_content):
+            violations.append(
+                f"credential detected: {display_path(path, root)}"
+            )
+        if any(GEMINI_API_KEY.search(content) for content in decoded_content):
             violations.append(
                 f"credential detected: {display_path(path, root)}"
             )

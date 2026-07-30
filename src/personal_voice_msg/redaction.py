@@ -8,7 +8,9 @@ REDACTED = "[REDACTED]"
 GITHUB_TOKEN = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
 )
+GEMINI_API_KEY = re.compile(r"\bAIza[A-Za-z0-9_-]{30,}\b")
 E164_PHONE = re.compile(r"(?<!\w)\+[1-9][0-9]{7,14}(?![0-9])")
+
 
 class SensitiveValue[SensitiveType]:
     """Require an explicit method call to access sensitive data."""
@@ -45,6 +47,7 @@ class Redactor:
         for value in self._sensitive_values:
             redacted = redacted.replace(value, REDACTED)
         redacted = GITHUB_TOKEN.sub(REDACTED, redacted)
+        redacted = GEMINI_API_KEY.sub(REDACTED, redacted)
         return E164_PHONE.sub(REDACTED, redacted)
 
 
@@ -82,10 +85,14 @@ def install_redacting_filter(
             if id(handler) in visited_handlers:
                 continue
             visited_handlers.add(id(handler))
+            sensitive_values = list(redactor._sensitive_values)
             for installed_filter in tuple(handler.filters):
                 if isinstance(installed_filter, RedactingFilter):
+                    sensitive_values.extend(
+                        installed_filter._redactor._sensitive_values
+                    )
                     handler.removeFilter(installed_filter)
-            handler.addFilter(RedactingFilter(redactor))
+            handler.addFilter(RedactingFilter(Redactor(tuple(sensitive_values))))
         if not current.propagate:
             break
         current = current.parent

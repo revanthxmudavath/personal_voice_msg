@@ -25,13 +25,30 @@ Build a fully cloud-hosted service that:
 
 ## Current status and blockers
 
-T01 through T06 are implemented and audited. T07 is the next backlog task.
+T01 through T09 are implemented and audited. T09 selected the deterministic
+T07 discovery fallback after the restricted LangChain/Gemini candidate failed
+the protocol and hostile-input security gates. T10 is the next backlog task,
+subject to its production inference-provider gate.
 
-Confirmed state as of 2026-07-23:
+Confirmed state as of 2026-07-30:
 
 - Canonical implementation checkout: `F:\personal_voice_msg`.
-- T01 through T06 are implemented with task logs and pushed branches; T06
-  implementation commit `2e86b91` was merged by PR #4.
+- T01 through T08 are implemented with task logs and pushed branches.
+- The corrected, equal-budget T09 benchmark used the frozen
+  `t09-semantic-v2` corpus and independently observed corpus SHA-256
+  `0b07ed96da644ff8b500dd2a45dc60565f586748a653df0c9727337949e0a636`.
+- The deterministic arm completed 5/20 protocol-perfect runs and produced 10
+  unique valid cards. The agent arm completed 13/20 protocol-perfect runs and
+  produced 26 unique valid cards, but failed the required 19/20 protocol floor
+  and the hostile-input security gate. Resource limits passed.
+- T09 therefore retained no runtime discovery agent. Its LangChain/Gemini
+  runtime code and dependencies were removed; T07 is the deployable discovery
+  path. The external owner-managed Gemini key was not modified.
+- Generic Gemini-key repository scanning and log redaction remain because they
+  strengthen provider-independent secret handling.
+- A future API-based discovery agent requires a plan amendment and a fresh,
+  frozen, non-ceiling benchmark. It may not be prompt-tuned against the T09
+  evaluation corpus.
 - The workspace can edit the repository and `git status` works.
 - The repository has a credential-free HTTPS `origin` remote.
 - GitHub CLI authentication for `revanthxmudavath` succeeds outside the
@@ -60,10 +77,10 @@ T00 is complete only when:
 - pytest, Ruff, and a Python type checker
 - SQLite with transactions and FTS
 - SearXNG and Trafilatura
-- deterministic discovery baseline before any agent framework
-- conditional restricted Hermes Agent benchmark, then LangChain `create_agent`
-- smolagents `ToolCallingAgent` only if the preferred harnesses are incompatible
-- small quantized open-weight model through `llama.cpp`
+- deterministic T07 discovery selected for the current runtime
+- no retained runtime agent framework
+- production/private inference for T10 and T11 is blocked on a separate
+  paid-tier-or-approved-provider decision and requalification gate
 - Pocket TTS for authorized voice embedding and synthesis
 - FFmpeg for OGG/Opus conversion and validation
 - WAHA Core behind a narrow internal sender
@@ -138,14 +155,14 @@ Tests must not use:
 - fake LLM responses
 - in-memory database substitutes
 - fake WhatsApp APIs
-- bypasses for SQLite, HTTP, `llama.cpp`, Pocket TTS, FFmpeg, or WAHA in integration tests
+- bypasses for SQLite, HTTP, the selected real model API, Pocket TTS, FFmpeg, or WAHA in integration tests
 
 Use real implementations instead:
 
 - temporary file-backed SQLite databases
 - real ephemeral HTTP services and container networks
 - real SearXNG and Trafilatura
-- the real selected model through `llama.cpp`
+- the real selected provider/model at the applicable model task boundary
 - a real, consented non-production voice for initial TTS integration
 - real FFmpeg/ffprobe processing
 - real WAHA paired to a dedicated test session
@@ -187,14 +204,15 @@ Rules:
 - Security checks live in deterministic tool implementations, not only in prompts.
 - A failed discovery run creates zero candidates and cannot interfere with the daily sender.
 
-Evaluate a restricted Hermes Agent harness first, then LangChain `create_agent`,
-then smolagents `ToolCallingAgent`. A candidate may stay only if a 20-run
-comparison shows at least 95% correct tool-call completion and materially
-better valid unique candidate yield than deterministic searches. Hermes must
-run without its built-in toolsets, memory, skills, plugins, gateways,
-delegation, or code execution and expose exactly the four allowed discovery
-tools. If no candidate passes, remove the framework. Do not use a
-code-executing agent.
+T09 evaluated LangChain `create_agent` with `gemini-3.6-flash` and did not
+retain it. The deterministic T07 workflow is the current production discovery
+implementation. Do not reintroduce a runtime agent through incidental work.
+
+Any future discovery-agent proposal must use a fresh versioned corpus and
+repeat the full 20-run comparison. A candidate may stay only if at least 95%
+of runs have correct tool trajectories, every hostile-input and resource gate
+passes, and it materially improves valid unique yield. It must still expose
+exactly the four tools above and may never approve, synthesize, or send.
 
 ## Content and rights rules
 
@@ -255,7 +273,9 @@ WAHA is unofficial WhatsApp Web automation and can be logged out or restricted. 
 - Use read-only root filesystems where practical.
 - Apply CPU, memory, process, response-size, redirect, and timeout limits.
 - Separate discovery, model, voice, and sender networks and volumes.
-- Pin dependency versions, container digests, and model checksums.
+- Pin dependency versions and container digests. For managed model APIs, pin
+  the provider, stable model ID, API contract, and client version, and require
+  requalification before changing any of them.
 - Validate DNS before connection and after every redirect.
 - Block loopback, private, link-local, multicast, and cloud metadata destinations.
 - T18 must disable NAT64 on discovery networks or supply and test the deployed
@@ -334,6 +354,8 @@ The project is complete only when:
 
 ## Immediate next step
 
-Begin T07 from the audited T01-T06 foundation. Revalidate GitHub CLI
-authentication and Docker access at the T07 boundary because those external
-services can change independently of repository state.
+Begin T10 from the audited T01-T09 foundation. First verify the Gemini API
+project's Plan in Google AI Studio and explicitly select the private/production
+inference configuration. Upgrade Node from 22.13 to at least 22.22 before using
+the current Promptfoo release. Requalify the pinned provider, model, API, and
+client with real calls before accepting T10 output.

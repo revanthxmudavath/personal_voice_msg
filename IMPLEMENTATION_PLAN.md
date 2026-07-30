@@ -1,6 +1,7 @@
 # Personal Voice Message Assistant — Implementation Plan
 
-Status: T01-T06 implemented and audited; T07 is next
+Status: T01-T09 implemented and audited; T09 selected the deterministic
+discovery fallback; T10 is next after its production provider gate
 Primary repository target: `F:\personal_voice_msg`
 Delivery schedule: every day at 07:00 `America/Los_Angeles`
 Development method: agentic, test-driven, no mocked dependencies
@@ -22,7 +23,9 @@ No service must remain running on the owner's laptop.
 
 ## 2. Non-negotiable constraints
 
-- Application-controlled components must be open source or openly licensed.
+- Application-controlled code and components must be open source or openly
+  licensed. The owner has approved Gemini as one additional proprietary
+  external dependency for the T09 benchmark only.
 - WhatsApp, GitHub, and the cloud provider remain unavoidable proprietary external dependencies.
 - The voice clone may only use the owner's voice with explicit authorization.
 - A dedicated WhatsApp sending number is strongly recommended.
@@ -44,10 +47,10 @@ No service must remain running on the owner's laptop.
 | Package manager | `uv` with a committed lockfile |
 | Operational database | SQLite with transactions and FTS |
 | Web discovery | SearXNG plus Trafilatura |
-| Runtime agent | Conditional restricted-harness benchmark: Hermes Agent, then LangChain `create_agent` |
-| Runtime agent fallback | smolagents `ToolCallingAgent` only if the preferred harnesses are incompatible |
-| Simplest fallback | Deterministic predefined search workflow |
-| Text inference | Small quantized open-weight model through `llama.cpp` |
+| Runtime agent | None retained after the T09 candidate failed protocol and hostile-input gates |
+| Current discovery | Deterministic T07 predefined search workflow |
+| Future agent path | Separate API-based candidate behind the exact restricted tool boundary and a fresh frozen benchmark |
+| T10/T11 inference | Deferred: paid tier or another explicitly approved provider must pass a separate private-data and production requalification gate |
 | Voice cloning | Pocket TTS voice embedding and synthesis |
 | Audio conversion | FFmpeg to OGG/Opus |
 | WhatsApp bridge | WAHA Core behind a narrow internal sender wrapper |
@@ -142,7 +145,7 @@ Permitted test mechanisms:
 - Temporary real SQLite files
 - Real ephemeral HTTP services and container networks
 - Real SearXNG and Trafilatura
-- Real `llama.cpp` inference using the selected model
+- Real selected provider/model inference at each model task boundary
 - Real Pocket TTS inference using a consented test voice
 - Real FFmpeg encoding and probing
 - Real WAHA session sending only to the owner's test chat
@@ -156,6 +159,33 @@ Test categories:
 - `live`: changing external web sources
 - `security`: adversarial URLs, content, permissions, and replay tests
 - `e2e`: real model, TTS, WAHA, and WhatsApp delivery
+
+### Evaluation and guardrail policy
+
+- Deterministic pytest and security tests remain the authoritative release
+  gates. An evaluation framework may orchestrate trials and report metrics but
+  cannot authorize a candidate, queue transition, audio artifact, or send.
+- Use [Promptfoo](https://github.com/promptfoo/promptfoo) as a test-only
+  orchestrator for the real T10/T11 application boundaries. Use committed
+  trusted configuration, a scoped evaluation credential, and `--no-cache`.
+  Do not enable hosted sharing or treat Promptfoo as a sandbox.
+- Upgrade Node from the current 22.13 release to at least 22.22 before
+  installing the current Promptfoo release.
+- Eval runners are development and protected-staging dependencies, never
+  production runtime services or trust boundaries.
+- Version and pin each corpus, prompt, provider, stable model ID, API contract,
+  client, tool schema, and scoring rule. A change to any of them requires the
+  affected eval suite to be rerun before acceptance.
+- Use real provider calls and real application state. Provider errors, quota
+  failures, timeouts, malformed outputs, and uncertain outcomes count as
+  failures rather than skipped or replayed successes.
+- Grade actual outcomes and state transitions, not the agent's conversational
+  claim. Preserve only redacted traces, aggregate counters, and non-reversible
+  fingerprints; never persist secrets, private history, recipient data, raw
+  scraped text, voice data, or generated audio in eval reports.
+- Seed every critical corpus with human-labelled normal, edge, and adversarial
+  examples. Calibrate any model-based quality grader against those labels;
+  deterministic security invariants always take precedence.
 
 ## 7. Cloud test and deployment environments
 
@@ -171,12 +201,14 @@ Runs on every pull request without production secrets:
 - secret scanning
 - dependency and container image scanning
 - Docker Compose configuration validation when Docker is available
+- validation of pinned Promptfoo configurations and corpus schemas;
+  real-provider eval execution remains opt-in in protected staging
 
 ### Temporary staging environment
 
 Runs heavy and live tests in the cloud:
 
-- real `llama.cpp` model
+- real selected provider/model APIs with task-specific data boundaries
 - deterministic-versus-agent discovery benchmark
 - live SearXNG and extraction
 - Pocket TTS and FFmpeg
@@ -452,6 +484,8 @@ Done when every card is traceable and contains no prohibited source passage.
 ### T09 — Conditional discovery-agent harness benchmark
 
 Dependencies: T07, T08
+Current status: complete. The corrected benchmark rejected the
+LangChain/Gemini candidate and selected deterministic T07 discovery.
 
 Red tests:
 
@@ -470,35 +504,85 @@ search_message_history(candidate)
 submit_inspiration_card(card)
 ```
 
-Implementation:
+Evaluated implementation:
 
-- Evaluate Hermes Agent first as a restricted harness around one model, one
-  prompt, one schema, and hard limits. Use LangChain `create_agent` as the
-  leaner fallback if Hermes is incompatible or cannot be reduced to the exact
-  required surface.
+- Use LangChain `create_agent` around the fixed stable model ID
+  `gemini-3.6-flash`, one prompt, one schema, and hard limits. The initially
+  proposed `gemini-2.5-flash` returned `404 NOT_FOUND` for the new API project
+  before benchmarking; Google documents `gemini-3.6-flash` as its current
+  stable GA Flash model.
+- Compatibility review excluded Hermes Agent because custom tools require its
+  plugin machinery and excluded smolagents `ToolCallingAgent` because it adds
+  an implicit `final_answer` tool; neither can prove the exact literal
+  four-tool surface. Google ADK is excluded from T09.
+- The Gemini Developer API is approved for this benchmark only. The owner
+  reports Google AI Pro, but Google documents API billing and rate limits as
+  properties of the API key's project and linked billing account; verify the
+  project's Plan in Google AI Studio rather than inferring it from a consumer
+  subscription. Send only public-page excerpts bounded to at most 3,000
+  characters and synthetic message history.
+  Keep the full extracted page text transient in host process memory solely
+  for deterministic T08 source-copy validation, then discard it at run end.
+  Never send private message history, recipient data, voice data, secrets, or
+  full page text to the Gemini API.
 - No LangSmith requirement, persistence, checkpointer, memory, skills, plugins,
   gateways, filesystem, shell, code execution, delegation, subagents, TTS,
   WhatsApp, secrets, or generic HTTP.
 
 Decision benchmark:
 
-- Hermes may enter the benchmark only if the selected local
-  `llama.cpp` model supports its context requirements and a test proves that
-  all built-in toolsets, memory, skills, plugins, gateways, delegation, and
-  code execution are disabled, leaving exactly the four allowed tools.
-- Run deterministic and the selected compatible harness 20 times each using
-  the real selected model.
+- Pin the provider, stable model ID, API contract, and client version for the
+  benchmark. Any change requires the benchmark to be rerun before acceptance.
+- Run deterministic and LangChain `create_agent` 20 times each. Agent runs use
+  the real fixed `gemini-3.6-flash` API and the same bounded inputs and resource
+  limits.
+- Use identical per-run search, fetch, history, submission, token, and time
+  budgets. The versioned scenario corpus must contain natural semantic
+  variation, duplicates, extraction failures, and hostile page instructions;
+  it must not let either arm reach the maximum possible yield trivially.
 - Keep the harness only if at least 95% of runs complete without malformed
   calls and it materially improves valid unique candidate yield within
   resource limits.
-- Evaluate candidates in order: restricted Hermes Agent, LangChain
-  `create_agent`, then smolagents `ToolCallingAgent`. Stop at the first
-  compatible candidate that passes the benchmark.
-- If no candidate beats the baseline, remove all agent-framework dependencies.
+- API errors, quota exhaustion, timeouts, malformed calls, or uncertain output
+  fail closed and create zero candidates.
+- If LangChain does not pass every retention gate, remove all agent-framework
+  and Gemini-client dependencies introduced by T09 and retain deterministic
+  T07.
+- T09 does not approve this Gemini configuration for T10 or T11. Those tasks
+  remain blocked until the API project is verified as Paid in Google AI Studio
+  or another provider is explicitly approved for private and production
+  inference, and the selected configuration passes data-handling, reliability,
+  cost, API, model, and client requalification.
+
+Final evidence and decision:
+
+- The historical paired report recorded 20/20 protocol completion and 40 agent
+  cards versus 1 deterministic card. That comparison used unequal baseline
+  behavior and is retained only as debugging history, not as current retention
+  evidence.
+- The corrected `t09-semantic-v2` corpus contained 20 natural, semantic-only,
+  and hostile scenarios. Both arms received equal 120-second limits and the
+  runner independently hashed the bytes observed through each arm. The
+  order-sensitive corpus SHA-256 was
+  `0b07ed96da644ff8b500dd2a45dc60565f586748a653df0c9727337949e0a636`.
+- The deterministic arm completed 5/20 protocol-perfect runs and produced 10
+  unique valid cards. It passed the security and resource gates.
+- The agent arm completed 13/20 protocol-perfect runs and produced 26 unique
+  valid cards. It passed the material-yield and resource gates, but failed the
+  required 19/20 protocol threshold and hostile-input security gate. The run
+  consumed 191,620 input and 7,262 output tokens.
+- The result is `retained: false`. The LangChain harness, Gemini client, live
+  fixtures, and T09-only tests were removed. Generic Gemini credential
+  detection and log redaction remain as provider-independent protections.
+- The external owner-managed Gemini key was not changed or deleted.
+- A future API-based discovery agent is a separate proposal. It must use the
+  exact restricted tool boundary above, a fresh frozen non-ceiling corpus, and
+  the same deterministic authorization. Reusing or prompt-tuning against the
+  T09 evaluation corpus is prohibited.
 
 ### T10 — Original English sentence generation
 
-Dependencies: T08
+Dependencies: T08, T09
 
 Red tests with the real model:
 
@@ -512,8 +596,14 @@ Implementation:
 - Generate only from the sanitized InspirationCard.
 - Use low temperature, bounded length, and structured output.
 - Re-run deterministic source and history checks after generation.
+- Use Promptfoo with a custom Python provider that calls the real generation
+  boundary over a versioned fixed InspirationCard corpus. Disable caching and
+  use the application's deterministic assertions rather than duplicated
+  model-graded rules.
 
-Done when a fixed multi-run corpus meets the agreed validity and originality thresholds.
+Done when at least 100 fresh real-provider trials have 100% structural and
+prohibited-field compliance and at least 95% valid-original yield, with every
+failure preserved as a redacted regression fixture.
 
 ### T11 — Deterministic safety gates and structured judge
 
@@ -538,8 +628,16 @@ Implementation:
 - Run deterministic prohibitions first.
 - Use a separate structured LLM judge for romantic tone, warmth, spoken naturalness, and remaining risks.
 - The judge returns a score and reasons but cannot update approval state.
+- Run the full deterministic-gates-plus-judge boundary through Promptfoo with
+  the same real custom provider, pinned corpus, and `--no-cache`. Model-graded
+  Promptfoo assertions are non-authoritative and must not introduce a hidden
+  second judge.
+- Calibrate the structured judge against human-labelled normal, boundary, and
+  adversarial examples before setting the final safe-corpus acceptance floor.
 
-Done when every prohibited fixture is rejected, safe fixtures meet the documented pass-rate target, and malformed judge output is rejected.
+Done when every prohibited fixture and every malformed or uncertain judge
+output is rejected, the human-calibrated safe corpus achieves at least 95%
+acceptance, and no model result can bypass deterministic approval code.
 
 ### T12 — Approved queue and safe reserve
 
@@ -704,7 +802,8 @@ Implementation:
 - Separate discovery, model, voice, and sender networks and volumes.
 - Disable NAT64 on discovery networks or supply and test the deployment Pref64,
   with egress controls that block discovery access to private services.
-- Pin container digests and model checksums.
+- Pin container digests. For managed model APIs, pin the provider, stable model
+  ID, API contract, and client version, and requalify before changing them.
 - Mount deployed secrets outside the application checkout, validate their
   ownership and modes at startup, and expose each only to its required service.
 - Scan the complete Git history and built images for sensitive artifacts before
@@ -747,6 +846,8 @@ Execution:
 5. Obtain recipient consent and confirm STOP behavior.
 6. Replace the staging allowlist with the girlfriend's number.
 7. Lock production configuration and enable the 07:00 schedule.
+8. Rerun the frozen T10/T11 Promptfoo suites with caching disabled against the
+   exact release pins.
 
 Production release gate:
 
@@ -758,13 +859,13 @@ Production release gate:
 - no leaked secrets
 - no unresolved high-severity dependency or image findings
 - all safety, originality, SSRF, prompt-injection, audio, and delivery suites green
+- no failed or skipped required Promptfoo release gate
 
 ## 10. Task dependency summary
 
 ```text
-T00 -> T01 -> T02 -> T03 -> T04 -> T07 -> T08 -> T10 -> T11 -> T12
+T00 -> T01 -> T02 -> T03 -> T04 -> T07 -> T08 -> T09 -> T10 -> T11 -> T12
 T02 -----------------------> T06 -> T07
-T07 ------------------------------> T08 -> T09
 T03 -----------------------> T05 -------------------------------> T16
 T02 -> T13 -> T14 -> T15 -> T16 -> T17 -> T18 -> T19 -> T20
 T12 -----------------------> T14
@@ -798,7 +899,8 @@ Milestones:
 - [ ] No public WAHA, model, database, or administration port
 - [ ] Secrets absent from Git, images, logs, and command arguments
 - [ ] Encrypted backups and tested recovery
-- [ ] Pinned dependencies, images, and model checksums
+- [ ] Pinned dependencies and images; pinned provider/model/API/client with
+      requalification for managed inference
 - [ ] Secret, dependency, and image scans in CI
 - [ ] Ambiguous delivery never retried blindly
 
@@ -821,6 +923,8 @@ The project is complete only when:
 
 ## 13. Immediate next action
 
-Begin T07 from the audited T01-T06 foundation. Revalidate GitHub CLI
-authentication and Docker access at the T07 boundary because those external
-services can change independently of repository state.
+Begin T10 from the audited T01-T09 foundation. Verify the Gemini API project's
+Plan in Google AI Studio and explicitly select the private/production inference
+configuration. Upgrade Node from 22.13 to at least 22.22 before installing the
+current Promptfoo release. Then freeze the T10 corpus and provider pins, write
+the failing generation-boundary tests, and qualify the real provider.

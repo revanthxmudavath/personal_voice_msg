@@ -195,6 +195,29 @@ def test_secret_scan_rejects_dummy_github_credential(tmp_path: Path) -> None:
 
 
 @pytest.mark.fast
+def test_secret_scan_rejects_dummy_gemini_credential(tmp_path: Path) -> None:
+    planted = tmp_path / "notes.txt"
+    planted.write_text(
+        "key=AI" + "za" + ("A" * 35) + "\n",
+        encoding="utf-8",
+    )
+
+    result = run_policy(tmp_path, "secrets")
+
+    assert_failed_with(result, "credential", "notes.txt")
+
+
+@pytest.mark.fast
+def test_secret_scan_rejects_gemini_key_filename(tmp_path: Path) -> None:
+    planted = tmp_path / "gemini_api_key.txt"
+    planted.write_text("not-a-real-key\n", encoding="utf-8")
+
+    result = run_policy(tmp_path, "secrets")
+
+    assert_failed_with(result, "sensitive artifact", planted.name)
+
+
+@pytest.mark.fast
 def test_secret_scan_accepts_non_secret_content(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("No credentials here.\n", encoding="utf-8")
 
