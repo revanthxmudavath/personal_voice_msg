@@ -117,6 +117,12 @@ def test_database_has_no_public_message_insertion_bypass() -> None:
 
 
 @pytest.mark.fast
+@pytest.mark.parametrize("method_name", ["connect", "write_transaction"])
+def test_database_has_no_public_raw_sql_bypass(method_name: str) -> None:
+    assert not hasattr(Database, method_name)
+
+
+@pytest.mark.fast
 @pytest.mark.parametrize(
     "variant",
     [
@@ -266,15 +272,12 @@ def test_recorded_message_text_is_immutable(tmp_path: Path) -> None:
     text = "Your calm presence makes each morning feel hopeful."
     message_id = record_message(history, text)
 
-    connection = history.database.connect()
-    try:
+    with sqlite3.connect(path) as connection:
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             connection.execute(
                 "UPDATE messages SET text = ? WHERE id = ?",
                 ("Changed text", message_id),
             )
-    finally:
-        connection.close()
 
     decision = history.evaluate(text)
     assert decision.reason is DuplicateReason.EXACT

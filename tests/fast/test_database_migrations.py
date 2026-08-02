@@ -298,7 +298,7 @@ def test_operational_connections_enforce_foreign_keys(tmp_path: Path) -> None:
     database_path = tmp_path / "assistant.sqlite3"
     database = Database(database_path)
     database.migrate()
-    connection = database.connect()
+    connection = database._connect()
 
     try:
         enabled = connection.execute("PRAGMA foreign_keys").fetchone()
@@ -322,7 +322,7 @@ def test_new_database_instance_preserves_schema_and_data(tmp_path: Path) -> None
     database_path = tmp_path / "assistant.sqlite3"
     first_database = Database(database_path)
     first_database.migrate()
-    first_connection = first_database.connect()
+    first_connection = sqlite3.connect(database_path)
 
     try:
         first_connection.execute(
@@ -337,7 +337,7 @@ def test_new_database_instance_preserves_schema_and_data(tmp_path: Path) -> None
 
     second_database = Database(database_path)
     second_database.migrate()
-    second_connection = second_database.connect()
+    second_connection = sqlite3.connect(database_path)
     try:
         row = second_connection.execute("SELECT value FROM reopen_probe").fetchone()
         tables = {
@@ -439,7 +439,7 @@ def test_version_three_migration_fails_closed_on_existing_exact_duplicates(
     database.migrate()
     downgrade_current_database_to_v2(database_path)
     duplicate_hash = normalized_hash("Your smile makes every morning brighter.")
-    connection = database.connect()
+    connection = sqlite3.connect(database_path)
     try:
         for text in ("First stored sentence.", "Second stored sentence."):
             cursor = connection.execute(
