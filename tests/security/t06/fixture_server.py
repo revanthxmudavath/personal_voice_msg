@@ -9,6 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 MAX_BODY_BYTES = 1_048_576
 CANARY_LOCK = threading.Lock()
 CANARY_HITS = 0
+REBIND_REQUESTED = threading.Event()
+REBIND_RELEASED = threading.Event()
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
@@ -42,7 +44,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
 
     def _public_get(self) -> None:
         path = self.path.split("?", maxsplit=1)[0]
-        if path in {"/", "/health", "/ok"}:
+        if path in {"/", "/health", "/ok", "/rebound"}:
             self._send(200, b"<html><body>public fixture</body></html>")
             return
         if path == "/request-info":
@@ -62,6 +64,32 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 302,
                 headers=(("Location", "http://private.fixture.example/canary"),),
             )
+            return
+        if path == "/redirect-azure":
+            self._send(
+                302,
+                headers=(("Location", "http://168.63.129.16/canary"),),
+            )
+            return
+        if path == "/redirect-rebind":
+            REBIND_REQUESTED.set()
+            if not REBIND_RELEASED.wait(timeout=5):
+                self._send(500, b"release timeout", content_type="text/plain")
+                return
+            self._send(
+                302,
+                headers=(
+                    ("Location", "http://rebind.fixture.example/rebound"),
+                ),
+            )
+            return
+        if path == "/rebind-ready":
+            ready = b"1" if REBIND_REQUESTED.is_set() else b"0"
+            self._send(200, ready, content_type="text/plain")
+            return
+        if path == "/release-rebind":
+            REBIND_RELEASED.set()
+            self._send(200, b"released", content_type="text/plain")
             return
         if path == "/https-downgrade":
             self._send(

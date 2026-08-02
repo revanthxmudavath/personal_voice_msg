@@ -33,7 +33,7 @@ services:
       dockerfile: tests/security/t06/Dockerfile
     command: ["python", "tests/security/t06/fixture_server.py"]
     environment:
-      FIXTURE_MODE: public
+      FIXTURE_MODE: canary
       FIXTURE_TLS: untrusted
     networks:
       public-web:
@@ -47,6 +47,30 @@ services:
           "python",
           "-c",
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1/health', timeout=1).read()",
+        ]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  azure-canary:
+    build:
+      context: ../../..
+      dockerfile: tests/security/t06/Dockerfile
+    command: ["python", "tests/security/t06/fixture_server.py"]
+    environment:
+      FIXTURE_MODE: canary
+    networks:
+      azure-platform:
+        ipv4_address: 168.63.129.16
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1/count', timeout=1).read()",
         ]
       interval: 1s
       timeout: 1s
@@ -99,6 +123,8 @@ services:
         condition: service_healthy
       untrusted-fixture:
         condition: service_healthy
+      azure-canary:
+        condition: service_healthy
     environment:
       ALL_PROXY: http://private.fixture.example/
       HTTP_PROXY: http://private.fixture.example/
@@ -113,6 +139,7 @@ services:
     networks:
       - public-web
       - private-services
+      - azure-platform
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
 
@@ -127,3 +154,8 @@ networks:
     ipam:
       config:
         - subnet: 10.66.0.0/24
+  azure-platform:
+    internal: true
+    ipam:
+      config:
+        - subnet: 168.63.129.0/24

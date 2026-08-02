@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import ipaddress
+import math
 import re
 import secrets
 import socket
@@ -34,6 +35,9 @@ HTTP_TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 NAT64_PREFIXES = (
     ipaddress.ip_network("64:ff9b::/96"),
     ipaddress.ip_network("64:ff9b:1::/48"),
+)
+CLOUD_PLATFORM_ADDRESSES = frozenset(
+    {ipaddress.ip_address("168.63.129.16")}
 )
 
 
@@ -83,19 +87,31 @@ class FetchPolicy:
     max_field_size: int = 8_192
 
     def __post_init__(self) -> None:
-        values = (
+        count_limits = (
             self.max_body_bytes,
             self.max_redirects,
-            self.total_timeout_seconds,
-            self.dns_timeout_seconds,
-            self.connect_timeout_seconds,
-            self.read_timeout_seconds,
             self.max_headers,
             self.max_line_size,
             self.max_field_size,
         )
-        if any(value <= 0 for value in values):
-            raise ValueError("fetch policy limits must be positive")
+        if any(type(value) is not int or value <= 0 for value in count_limits):
+            raise ValueError("fetch policy count limits must be positive integers")
+        duration_limits = (
+            self.total_timeout_seconds,
+            self.dns_timeout_seconds,
+            self.connect_timeout_seconds,
+            self.read_timeout_seconds,
+        )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+            for value in duration_limits
+        ):
+            raise ValueError(
+                "fetch policy time limits must be positive finite durations"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +161,8 @@ def is_public_address(address: str) -> bool:
     except ValueError:
         return False
     if (
-        not parsed.is_global
+        parsed in CLOUD_PLATFORM_ADDRESSES
+        or not parsed.is_global
         or parsed.is_loopback
         or parsed.is_link_local
         or parsed.is_multicast

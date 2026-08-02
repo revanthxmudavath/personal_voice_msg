@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import socket
 import urllib.request
 
 import pytest
@@ -13,7 +12,6 @@ from personal_voice_msg.discovery.web import (
     FetchedPage,
     FetchPolicy,
     SearchHit,
-    _PublicResolver,
 )
 
 PUBLIC_ORIGIN = "http://public.fixture.example"
@@ -47,10 +45,14 @@ def rejected_path(path: str, policy: FetchPolicy | None = None) -> None:
     assert str(raised.value) == BOUNDARY_MESSAGE
 
 
-def private_canary_count() -> int:
+def fixture_read(url: str) -> bytes:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open("http://private.fixture.example/count", timeout=2) as response:
-        return int(response.read().decode())
+    with opener.open(url, timeout=2) as response:
+        return response.read()
+
+
+def canary_count(origin: str) -> int:
+    return int(fixture_read(f"{origin}/count").decode())
 
 
 def test_fetches_public_fixture_without_ambient_proxy_or_netrc() -> None:
@@ -101,15 +103,15 @@ def test_relative_redirect_succeeds() -> None:
 
 
 def test_private_redirect_is_rejected_before_canary_request() -> None:
-    before = private_canary_count()
+    before = canary_count("http://private.fixture.example")
 
     rejected_path("/redirect-private")
 
-    assert private_canary_count() == before
+    assert canary_count("http://private.fixture.example") == before
 
 
 def test_mixed_public_private_dns_answer_is_rejected_before_request() -> None:
-    before = private_canary_count()
+    before = canary_count("http://private.fixture.example")
     session = DiscoveryWebSession()
     result = session.record_search_results(
         (SearchHit("http://mixed.fixture.example/ok", "mixed", "mixed"),)
@@ -119,24 +121,58 @@ def test_mixed_public_private_dns_answer_is_rejected_before_request() -> None:
         asyncio.run(session.fetch_public_page(result.result_id))
 
     assert str(raised.value) == BOUNDARY_MESSAGE
-    assert private_canary_count() == before
+    assert canary_count("http://private.fixture.example") == before
 
 
-def test_changed_public_name_service_answer_set_fails_closed() -> None:
-    resolver = _PublicResolver(timeout_seconds=1.0)
+def test_azure_redirect_is_rejected_before_canary_request() -> None:
+    before = canary_count("http://168.63.129.16")
 
-    first = asyncio.run(
-        resolver.resolve("rebind.fixture.example", 80, socket.AF_UNSPEC)
-    )
-    assert {answer["host"] for answer in first} == {"93.184.216.10"}
+    rejected_path("/redirect-azure")
 
-    with open("/etc/hosts", "a", encoding="ascii") as hosts_file:
-        hosts_file.write("\n93.184.216.11 rebind.fixture.example.\n")
+    assert canary_count("http://168.63.129.16") == before
 
-    with pytest.raises(OSError, match="destination resolution changed"):
-        asyncio.run(
-            resolver.resolve("rebind.fixture.example", 80, socket.AF_UNSPEC)
+
+def test_fetch_rejects_dns_rebinding_before_rebound_request() -> None:
+    async def exercise() -> None:
+        rebound_origin = "http://untrusted.fixture.example"
+        before = await asyncio.to_thread(canary_count, rebound_origin)
+        session = DiscoveryWebSession()
+        result = session.record_search_results(
+            (
+                SearchHit(
+                    "http://rebind.fixture.example/redirect-rebind",
+                    "rebind",
+                    "rebind",
+                ),
+            )
+        )[0]
+        fetch_task = asyncio.create_task(
+            session.fetch_public_page(result.result_id)
         )
+        for _ in range(40):
+            ready = await asyncio.to_thread(
+                fixture_read,
+                f"{PUBLIC_ORIGIN}/rebind-ready",
+            )
+            if ready == b"1":
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("permitted redirect fixture did not receive first request")
+
+        with open("/etc/hosts", "a", encoding="ascii") as hosts_file:
+            hosts_file.write("\n93.184.216.11 rebind.fixture.example.\n")
+        await asyncio.to_thread(
+            fixture_read,
+            f"{PUBLIC_ORIGIN}/release-rebind",
+        )
+
+        with pytest.raises(DiscoveryBoundaryError) as raised:
+            await fetch_task
+        assert str(raised.value) == BOUNDARY_MESSAGE
+        assert await asyncio.to_thread(canary_count, rebound_origin) == before
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize(

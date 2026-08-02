@@ -8,7 +8,10 @@ from personal_voice_msg.discovery.web import (
     DiscoveryBoundaryError,
     DiscoveryWebSession,
     FetchedPage,
+    FetchPolicy,
     SearchHit,
+    canonical_public_url,
+    is_public_address,
 )
 
 BOUNDARY_MESSAGE = "discovery web boundary rejected the request"
@@ -33,6 +36,7 @@ def assert_boundary_error(error: pytest.ExceptionInfo[DiscoveryBoundaryError]) -
         "http://169.254.1.1/",
         "http://169.254.169.254/latest/meta-data/",
         "http://100.100.100.200/latest/meta-data/",
+        "http://168.63.129.16/",
         "http://[::1]/",
         "http://[fe80::1]/",
     ],
@@ -43,6 +47,7 @@ def assert_boundary_error(error: pytest.ExceptionInfo[DiscoveryBoundaryError]) -
         "link-local-ipv4",
         "aws-metadata",
         "alibaba-metadata",
+        "azure-wireserver",
         "localhost-ipv6",
         "link-local-ipv6",
     ),
@@ -87,3 +92,62 @@ def test_result_id_from_another_discovery_run_fails_closed() -> None:
         fetch(second_run, result.result_id)
 
     assert_boundary_error(error)
+
+
+def test_azure_wireserver_address_is_not_public() -> None:
+    assert not is_public_address("168.63.129.16")
+    with pytest.raises(DiscoveryBoundaryError) as error:
+        canonical_public_url("http://168.63.129.16/")
+    assert_boundary_error(error)
+
+
+COUNT_FIELDS = (
+    "max_body_bytes",
+    "max_redirects",
+    "max_headers",
+    "max_line_size",
+    "max_field_size",
+)
+DURATION_FIELDS = (
+    "total_timeout_seconds",
+    "dns_timeout_seconds",
+    "connect_timeout_seconds",
+    "read_timeout_seconds",
+)
+
+
+@pytest.mark.parametrize("field_name", COUNT_FIELDS)
+@pytest.mark.parametrize(
+    "value",
+    [1.0, True, float("nan"), float("inf"), float("-inf")],
+    ids=("float", "bool", "nan", "positive-infinity", "negative-infinity"),
+)
+def test_fetch_policy_count_fields_require_actual_positive_integers(
+    field_name: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match="positive integers"):
+        FetchPolicy(**{field_name: value})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field_name", DURATION_FIELDS)
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf")],
+    ids=("nan", "positive-infinity", "negative-infinity"),
+)
+def test_fetch_policy_duration_fields_reject_non_finite_values(
+    field_name: str,
+    value: float,
+) -> None:
+    with pytest.raises(ValueError, match="finite durations"):
+        FetchPolicy(**{field_name: value})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field_name", DURATION_FIELDS)
+@pytest.mark.parametrize("value", [1, 0.25], ids=("integer", "float"))
+def test_fetch_policy_duration_fields_accept_positive_finite_numbers(
+    field_name: str,
+    value: int | float,
+) -> None:
+    FetchPolicy(**{field_name: value})  # type: ignore[arg-type]
