@@ -13,8 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
           python-version: "3.12"
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: docker compose -p personal-voice-msg-t06 -f tests/security/t06/compose.yml config --quiet
       - run: docker compose -p personal-voice-msg-t06 -f tests/security/t06/compose.yml up --build --abort-on-container-exit --exit-code-from runner
       - if: always()
@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: docker compose -p personal-voice-msg-t07 -f tests/integration/t07/compose.yml config --quiet
       - run: docker compose -p personal-voice-msg-t07 -f tests/integration/t07/compose.yml up --build --abort-on-container-exit --exit-code-from runner
       - if: always()
