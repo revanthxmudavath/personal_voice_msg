@@ -337,7 +337,7 @@ class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def connect(self) -> sqlite3.Connection:
+    def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
             self.path,
             timeout=5.0,
@@ -349,7 +349,7 @@ class Database:
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
-        connection = self.connect()
+        connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             yield connection
@@ -360,14 +360,9 @@ class Database:
         finally:
             connection.close()
 
-    @contextmanager
-    def write_transaction(self) -> Iterator[sqlite3.Connection]:
-        with self._transaction() as connection:
-            yield connection
-
     def migrate(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = self.connect()
+        connection = self._connect()
         try:
             versions = _migration_versions(connection)
             if versions not in (
@@ -513,7 +508,7 @@ class Database:
             raise ValueError("recipient key must be an opaque identifier")
         if not isinstance(pacific_date, date) or isinstance(pacific_date, datetime):
             raise ValueError("Pacific date must be a date without a time")
-        connection = self.connect()
+        connection = self._connect()
         try:
             row = connection.execute(
                 """
@@ -774,7 +769,7 @@ class Database:
                 raise DatabaseInvariantError("delivery state changed concurrently")
 
     def get_message_state(self, message_id: int) -> MessageState:
-        connection = self.connect()
+        connection = self._connect()
         try:
             row = connection.execute(
                 "SELECT state FROM messages WHERE id = ?",
@@ -787,7 +782,7 @@ class Database:
         return MessageState(row[0])
 
     def get_delivery_state(self, delivery_id: int) -> MessageState:
-        connection = self.connect()
+        connection = self._connect()
         try:
             row = connection.execute(
                 "SELECT state FROM deliveries WHERE id = ?",
@@ -800,7 +795,7 @@ class Database:
         return MessageState(row[0])
 
     def count_deliveries(self, recipient_key: str, pacific_date: date) -> int:
-        connection = self.connect()
+        connection = self._connect()
         try:
             row = connection.execute(
                 """

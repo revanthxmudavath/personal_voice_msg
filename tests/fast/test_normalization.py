@@ -107,3 +107,19 @@ def test_removing_all_spaces_cannot_hide_a_source_span() -> None:
     candidate = "Onetwothreefourfivesix."
 
     assert copies_source_span(candidate, source, span_words=6)
+
+
+@pytest.mark.fast
+def test_symbol_only_source_span_does_not_match_unrelated_candidate() -> None:
+    source = "\u2764 \u2764 \u2764 \u2764 \u2764 \u2764"
+    candidate = "A completely original safe sentence."
+
+    assert not copies_source_span(candidate, source, span_words=6)
+
+
+@pytest.mark.fast
+def test_mixed_symbol_text_source_span_still_detects_compact_copy() -> None:
+    source = "\u2764 your \u2764 kindness \u2764 feels"
+    candidate = "Your-kindness-feels close to me."
+
+    assert copies_source_span(candidate, source, span_words=6)

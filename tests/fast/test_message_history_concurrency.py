@@ -139,7 +139,7 @@ def test_migrated_schema_enforces_unique_normalized_hashes(tmp_path: Path) -> No
         database, "Your smile makes every morning brighter."
     )
 
-    connection = database.connect()
+    connection = sqlite3.connect(database_path, isolation_level=None)
     try:
         duplicate_hash = connection.execute(
             "SELECT normalized_hash FROM message_history WHERE message_id = ?",
@@ -186,7 +186,8 @@ def test_duplicate_database_insert_rolls_back_message_hash_and_fts(
     )
 
     with pytest.raises(sqlite3.IntegrityError):
-        with database.write_transaction() as connection:
+        with sqlite3.connect(database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             insert_message_with_history(
                 connection,
                 "YOUR smile---makes every morning brighter!!!",

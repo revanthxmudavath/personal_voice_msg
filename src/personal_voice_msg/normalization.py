@@ -57,7 +57,8 @@ def copies_source_span(
         return True
 
     candidate_compact = _source_copy_compact(candidate)
-    return any(
-        _source_copy_compact(" ".join(span)) in candidate_compact
-        for span in source_spans
-    )
+    for span in source_spans:
+        compact_span = _source_copy_compact(" ".join(span))
+        if compact_span and compact_span in candidate_compact:
+            return True
+    return False

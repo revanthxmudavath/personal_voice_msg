@@ -410,3 +410,126 @@ jobs:
     result = run_policy(tmp_path, "workflow")
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    ("job", "expected_term"),
+    [
+        ("test: true", "job"),
+        ("test:\n    nonsense: true", "runs-on"),
+        ("test:\n    steps:\n      - run: echo ok", "runs-on"),
+        ("test:\n    runs-on: ubuntu-latest", "steps"),
+        (
+            "test:\n    runs-on: ubuntu-latest\n    steps:\n      - echo ok",
+            "step",
+        ),
+        (
+            "test:\n    runs-on: ubuntu-latest\n    steps:\n      - name: no command",
+            "step",
+        ),
+    ],
+    ids=(
+        "non-mapping-job",
+        "nonempty-invalid-job",
+        "missing-runs-on",
+        "missing-steps",
+        "non-mapping-step",
+        "non-executable-step",
+    ),
+)
+def test_workflow_check_rejects_invalid_job_structure(
+    tmp_path: Path,
+    job: str,
+    expected_term: str,
+) -> None:
+    workflow = tmp_path / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        f"name: CI\non: [push]\njobs:\n  {job}\n",
+        encoding="utf-8",
+    )
+
+    result = run_policy(tmp_path, "workflow")
+
+    assert_failed_with(result, "ci.yml", expected_term)
+
+
+@pytest.mark.fast
+def test_workflow_check_accepts_pinned_reusable_workflow_job(
+    tmp_path: Path,
+) -> None:
+    workflow = tmp_path / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        "name: CI\n"
+        "on: [push]\n"
+        "jobs:\n"
+        "  delegated:\n"
+        "    uses: owner/repository/.github/workflows/check.yml@"
+        "0123456789abcdef0123456789abcdef01234567\n",
+        encoding="utf-8",
+    )
+
+    result = run_policy(tmp_path, "workflow")
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("reference", ["actions/checkout@v7", "actions/checkout@main"])
+def test_workflow_check_rejects_moving_third_party_action_reference(
+    tmp_path: Path,
+    reference: str,
+) -> None:
+    workflow = tmp_path / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        f"""\
+name: CI
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: {reference}
+""",
+        encoding="utf-8",
+    )
+
+    result = run_policy(tmp_path, "workflow")
+
+    assert_failed_with(result, "ci.yml", "immutable")
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "./.github/actions/local-check",
+        "actions/checkout@0123456789abcdef0123456789abcdef01234567",
+    ],
+    ids=("local-action", "full-commit-sha"),
+)
+def test_workflow_check_accepts_permitted_action_reference(
+    tmp_path: Path,
+    reference: str,
+) -> None:
+    workflow = tmp_path / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        f"""\
+name: CI
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: {reference}
+""",
+        encoding="utf-8",
+    )
+
+    result = run_policy(tmp_path, "workflow")
+
+    assert result.returncode == 0, result.stderr

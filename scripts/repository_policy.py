@@ -39,6 +39,7 @@ SENSITIVE_ARTIFACT_SUFFIXES = {
     ".pfx",
 }
 DOCUMENTATION_SUFFIXES = {".json", ".md", ".toml", ".txt", ".yaml", ".yml"}
+FULL_COMMIT_SHA = re.compile(r"[0-9a-fA-F]{40}")
 
 
 def repository_files(root: Path, suffixes: set[str] | None = None) -> Iterable[Path]:
@@ -259,6 +260,15 @@ def check_secrets(root: Path) -> list[str]:
     return violations
 
 
+def _is_immutable_uses(reference: object) -> bool:
+    if not isinstance(reference, str) or not reference.strip():
+        return False
+    if reference.startswith("./"):
+        return True
+    _, separator, revision = reference.rpartition("@")
+    return bool(separator and FULL_COMMIT_SHA.fullmatch(revision))
+
+
 def check_workflows(root: Path) -> list[str]:
     workflow_root = root / ".github" / "workflows"
     violations: list[str] = []
@@ -286,6 +296,52 @@ def check_workflows(root: Path) -> list[str]:
         jobs = document.get("jobs")
         if not isinstance(jobs, dict) or not jobs:
             violations.append(f"workflow jobs missing: {display_path(path, root)}")
+            continue
+        for job_name, job in jobs.items():
+            if not isinstance(job, dict):
+                violations.append(
+                    f"workflow job invalid: {display_path(path, root)}: "
+                    f"{job_name} is not a mapping"
+                )
+                continue
+
+            reusable_workflow = job.get("uses")
+            if reusable_workflow is not None:
+                if not _is_immutable_uses(reusable_workflow):
+                    violations.append(
+                        f"workflow uses must be local or immutable: "
+                        f"{display_path(path, root)}: {job_name}"
+                    )
+                continue
+
+            if "runs-on" not in job:
+                violations.append(
+                    f"workflow job runs-on missing: "
+                    f"{display_path(path, root)}: {job_name}"
+                )
+            steps = job.get("steps")
+            if not isinstance(steps, list) or not steps:
+                violations.append(
+                    f"workflow job steps missing: "
+                    f"{display_path(path, root)}: {job_name}"
+                )
+                continue
+            for index, step in enumerate(steps, start=1):
+                executable = isinstance(step, dict) and any(
+                    isinstance(step.get(command), str) and step[command].strip()
+                    for command in ("run", "uses")
+                )
+                if not executable:
+                    violations.append(
+                        f"workflow step invalid: {display_path(path, root)}: "
+                        f"{job_name} step {index}"
+                    )
+                    continue
+                if "uses" in step and not _is_immutable_uses(step["uses"]):
+                    violations.append(
+                        f"workflow uses must be local or immutable: "
+                        f"{display_path(path, root)}: {job_name} step {index}"
+                    )
     return violations
 
 

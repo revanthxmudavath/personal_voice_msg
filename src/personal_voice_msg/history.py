@@ -42,7 +42,7 @@ class MessageHistory:
         *,
         source_text: str | None = None,
     ) -> DuplicateDecision:
-        connection = self.database.connect()
+        connection = self.database._connect()
         try:
             return self._evaluate_with_connection(
                 connection,
@@ -59,7 +59,7 @@ class MessageHistory:
         *,
         source_text: str | None = None,
     ) -> DuplicateDecision:
-        with self.database.write_transaction() as connection:
+        with self.database._transaction() as connection:
             decision = self._evaluate_with_connection(
                 connection,
                 candidate,
