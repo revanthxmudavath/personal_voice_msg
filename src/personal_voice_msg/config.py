@@ -20,6 +20,7 @@ REQUIRED_SETTINGS = {
 }
 RECIPIENT_SETTINGS = {"profile", "phone_number"}
 E164_PHONE = re.compile(r"\+[1-9][0-9]{7,14}")
+MAX_WAHA_TOKEN_CHARACTERS = 4_096
 
 
 class ConfigurationError(ValueError):
@@ -130,7 +131,7 @@ def _recipient(path: Path, profile: RuntimeProfile) -> str:
             path.read_text(encoding="utf-8"),
             object_pairs_hook=_reject_duplicate_json_keys,
         )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         raise ConfigurationError(
             "recipient configuration is unreadable or invalid"
         ) from None
@@ -146,6 +147,12 @@ def _recipient(path: Path, profile: RuntimeProfile) -> str:
 
 
 def _token(path: Path) -> str:
+    try:
+        oversized = path.stat().st_size > MAX_WAHA_TOKEN_CHARACTERS
+    except OSError:
+        raise ConfigurationError("WAHA token file is unreadable") from None
+    if oversized:
+        raise ConfigurationError("WAHA token file is too large")
     try:
         token = path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):

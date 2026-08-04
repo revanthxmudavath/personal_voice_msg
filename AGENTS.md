@@ -62,6 +62,23 @@ Confirmed state as of 2026-07-30:
 - Python 3.12.4, `uv`, Git, and Node 22.13 are installed.
 - FFmpeg and ffprobe are not installed; they are required before T14.
 
+### 2026-08-04 pre-T10 audit addendum (T08b)
+
+A repository-understanding pass plus a parallel-agent inefficiency sweep
+across T01-T08 proposed six hardening fixes. Direct verification against
+current source found four were false positives (a reservation-transaction
+"desync" that the existing `BEGIN IMMEDIATE`/rollback-on-exception design
+already prevents; a bounded-string-validator "duplication" that is really
+three functions with distinct, intentional semantics; a `web.py`
+scheme-port/fragment "gap" already closed by existing validation; and an
+FTS5 fuzzy-match "optimization" that would have reopened a
+typo-obfuscation duplicate-detection bypass). Two were real and fixed:
+`config.py` was missing a `RecursionError` guard on recipient JSON parsing
+and had no size limit on the WAHA token file read. Full findings and
+reasoning are in `docs/task-logs/T08b-pre-T09-hardening.md`. T09 remains
+complete and not retained (see the entry above); this addendum does not
+change that decision.
+
 Do not bypass the workspace sandbox or write repository files through shell
 redirection. Revalidate external toolchain gates before a dependent task uses
 them.

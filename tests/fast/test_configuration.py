@@ -322,3 +322,27 @@ def test_sensitive_values_use_redacting_wrappers_and_do_not_leak_to_logs(
     )
     for plaintext in sensitive.values():
         assert plaintext not in rendered
+
+
+@pytest.mark.fast
+def test_deeply_nested_recipient_json_fails_closed(tmp_path: Path) -> None:
+    config_path, values, _ = create_configuration(tmp_path)
+    recipient_path = Path(values["secret_root"]) / values["recipient_file"]
+    nesting_depth = 100_000
+    recipient_path.write_text(
+        "[" * nesting_depth + "]" * nesting_depth,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError):
+        load_settings(config_path)
+
+
+@pytest.mark.fast
+def test_oversized_waha_token_file_fails_closed(tmp_path: Path) -> None:
+    config_path, values, _ = create_configuration(tmp_path)
+    token_path = Path(values["secret_root"]) / values["waha_token_file"]
+    token_path.write_text("a" * 10_000_000, encoding="utf-8")
+
+    with pytest.raises(ConfigurationError):
+        load_settings(config_path)
