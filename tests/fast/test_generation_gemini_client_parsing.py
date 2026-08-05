@@ -73,6 +73,14 @@ def test_rejects_max_tokens_finish_reason() -> None:
 
 
 @pytest.mark.fast
+def test_max_tokens_finish_reason_is_captured_on_the_error() -> None:
+    with pytest.raises(GeminiClientError) as excinfo:
+        _parse_generate_content_response(REAL_MAX_TOKENS_RESPONSE)
+
+    assert excinfo.value.finish_reason == "MAX_TOKENS"
+
+
+@pytest.mark.fast
 @pytest.mark.parametrize(
     "broken_payload",
     [
