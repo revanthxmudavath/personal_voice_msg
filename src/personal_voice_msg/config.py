@@ -52,21 +52,21 @@ class Settings:
         )
 
 
-def _read_toml(config_path: Path) -> dict[str, Any]:
+def read_toml(config_path: Path, required_settings: set[str]) -> dict[str, Any]:
     try:
         document = tomllib.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         raise ConfigurationError(
             "configuration file is unreadable or invalid"
         ) from None
-    if set(document) != REQUIRED_SETTINGS:
+    if set(document) != required_settings:
         raise ConfigurationError("configuration settings are missing or unknown")
-    if not all(isinstance(document[key], str) for key in REQUIRED_SETTINGS):
+    if not all(isinstance(document[key], str) for key in required_settings):
         raise ConfigurationError("configuration settings must be strings")
     return document
 
 
-def _runtime_profile(value: str) -> RuntimeProfile:
+def runtime_profile(value: str) -> RuntimeProfile:
     try:
         return RuntimeProfile(value)
     except ValueError:
@@ -80,7 +80,7 @@ def _project_root(config_path: Path) -> Path:
     return config_path.parent
 
 
-def _secret_root(
+def secret_root(
     config_path: Path,
     value: str,
     profile: RuntimeProfile,
@@ -103,7 +103,7 @@ def _secret_root(
     return resolved
 
 
-def _secret_file(root: Path, value: str, setting: str) -> Path:
+def secret_file(root: Path, value: str, setting: str) -> Path:
     relative = Path(value)
     if relative.is_absolute():
         raise ConfigurationError(f"{setting} must be relative to secret root")
@@ -166,17 +166,17 @@ def load_settings(config_path: Path) -> Settings:
     """Load non-secret TOML settings and secret values from bounded files."""
 
     path = config_path.resolve()
-    document = _read_toml(path)
-    profile = _runtime_profile(document["profile"])
-    root = _secret_root(path, document["secret_root"], profile)
-    recipient_path = _secret_file(root, document["recipient_file"], "recipient_file")
-    token_path = _secret_file(root, document["waha_token_file"], "waha_token_file")
-    embedding_path = _secret_file(
+    document = read_toml(path, REQUIRED_SETTINGS)
+    profile = runtime_profile(document["profile"])
+    root = secret_root(path, document["secret_root"], profile)
+    recipient_path = secret_file(root, document["recipient_file"], "recipient_file")
+    token_path = secret_file(root, document["waha_token_file"], "waha_token_file")
+    embedding_path = secret_file(
         root,
         document["voice_embedding_file"],
         "voice_embedding_file",
     )
-    session_path = _secret_file(
+    session_path = secret_file(
         root,
         document["waha_session_file"],
         "waha_session_file",
