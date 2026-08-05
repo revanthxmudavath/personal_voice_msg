@@ -19,6 +19,7 @@ EXCLUDED_DIRECTORIES = {
     ".uv-cache",
     ".venv",
     "__pycache__",
+    "node_modules",
 }
 GITHUB_TOKEN = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"

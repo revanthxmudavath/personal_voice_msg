@@ -1,0 +1,47 @@
+# T10 100-trial qualification harness.
+#
+# Orchestrates volume over the real generation boundary
+# (personal_voice_msg.generation.sentence.generate_sentence); it does not
+# authorize a release candidate itself. Deterministic pytest and security
+# tests remain the authoritative release gates (IMPLEMENTATION_PLAN.md
+# "Evaluation and guardrail policy"). Assertions below observe the same
+# pass/fail Task 3's own deterministic validation already computes -- they
+# duplicate no new model-graded rule.
+#
+# Run with (real, paid API calls -- see docs/task-logs/T10.md for the
+# one-time real run record):
+#   npx promptfoo eval --no-cache -c evals/t10/promptfooconfig.yaml
+
+description: "T10 - 100-trial original sentence generation qualification"
+
+prompts:
+  - "Generate one original spoken-English sentence for theme={{theme}} emotion={{emotion}} imagery={{imagery}} tone={{tone}}."
+
+providers:
+  - id: "file://provider.py"
+    config:
+      pythonExecutable: "F:/personal_voice_msg/.venv/Scripts/python.exe"
+
+tests: file://corpus.yaml
+
+defaultTest:
+  assert:
+    # Non-empty output (mirrors validate_generated_sentence's emptiness check).
+    - type: javascript
+      value: "output.trim().length > 0"
+    # No URL/citation-style link (mirrors the _URL_PATTERN check).
+    - type: not-icontains
+      value: "http"
+    - type: not-icontains
+      value: "www."
+    # Exactly one terminal-punctuation mark, at the very end, nowhere else
+    # (mirrors the _TERMINAL_PUNCTUATION checks).
+    - type: regex
+      value: "^[^.!?]*[.!?]$"
+    # A qualification failure is returned as clearly-labeled text (never a
+    # raised exception, per the provider's contract), and is deliberately
+    # constructed to never end in terminal punctuation, so it always fails
+    # the assertion above and is counted as a failed trial by Promptfoo's
+    # own pass/fail summary -- not just by out-of-band inspection.
+    - type: not-icontains
+      value: "T10_QUALIFICATION_FAILURE"
