@@ -10,16 +10,25 @@
 #
 # Run with (real, paid API calls -- see docs/task-logs/T10.md for the
 # one-time real run record):
+#   npm install --no-save promptfoo@0.122.0   # pinned: the exact version
+#                                              # already used for the real run
 #   npx promptfoo eval --no-cache -c evals/t10/promptfooconfig.yaml
 
 description: "T10 - 100-trial original sentence generation qualification"
 
 prompts:
-  - "Generate one original spoken-English sentence for theme={{theme}} emotion={{emotion}} imagery={{imagery}} tone={{tone}}."
+  # This value is never actually sent to Gemini -- provider.py builds the
+  # real prompt itself via generation.sentence.build_prompt and ignores
+  # Promptfoo's own prompt argument. Kept only because Promptfoo's schema
+  # requires a `prompts:` entry to exist.
+  - "(unused - real prompt is built in-app by generation.sentence.build_prompt)"
 
 providers:
   - id: "file://provider.py"
     config:
+      # Machine-specific: this exact path only exists on the machine the
+      # real 100-trial run was executed on. Adjust before any re-run on a
+      # different machine.
       pythonExecutable: "F:/personal_voice_msg/.venv/Scripts/python.exe"
 
 tests: file://corpus.yaml
