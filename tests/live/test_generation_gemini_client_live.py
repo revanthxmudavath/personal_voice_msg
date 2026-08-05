@@ -8,6 +8,7 @@ import aiohttp
 import pytest
 
 from personal_voice_msg.generation.gemini_client import (
+    GeminiClientError,
     GeminiGenerationConfig,
     generate_structured,
 )
@@ -74,5 +75,5 @@ async def _call_with_too_small_a_token_budget() -> None:
 
 @pytest.mark.live
 def test_real_gemini_call_rejects_too_small_a_token_budget() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(GeminiClientError):
         asyncio.run(_call_with_too_small_a_token_budget())
