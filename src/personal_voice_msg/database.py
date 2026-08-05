@@ -794,6 +794,19 @@ class Database:
             raise RecordNotFound("delivery does not exist")
         return MessageState(row[0])
 
+    def get_message_text(self, message_id: int) -> str:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT text FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise RecordNotFound("message does not exist")
+        return str(row[0])
+
     def count_deliveries(self, recipient_key: str, pacific_date: date) -> int:
         connection = self._connect()
         try:

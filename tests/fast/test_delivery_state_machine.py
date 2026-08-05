@@ -8,7 +8,12 @@ from threading import Barrier
 
 import pytest
 
-from personal_voice_msg.database import Database, InvalidTransition, MessageState
+from personal_voice_msg.database import (
+    Database,
+    InvalidTransition,
+    MessageState,
+    RecordNotFound,
+)
 from personal_voice_msg.history import MessageHistory
 
 NOW = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
@@ -145,6 +150,31 @@ def test_message_state_is_persisted_after_each_restart(tmp_path: Path) -> None:
             Database(database_path).get_delivery_state(reservation.delivery_id) is state
         )
         assert Database(database_path).get_message_state(message_id) is state
+
+
+@pytest.mark.fast
+def test_get_message_text_returns_the_recorded_text(tmp_path: Path) -> None:
+    database_path = tmp_path / "state.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    message_id = record_message(database, "A warm original sentence.")
+
+    assert (
+        Database(database_path).get_message_text(message_id)
+        == "A warm original sentence."
+    )
+
+
+@pytest.mark.fast
+def test_get_message_text_raises_record_not_found_for_a_missing_id(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "state.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+
+    with pytest.raises(RecordNotFound):
+        database.get_message_text(1)
 
 
 @pytest.mark.fast
