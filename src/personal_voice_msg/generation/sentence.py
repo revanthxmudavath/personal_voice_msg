@@ -28,7 +28,22 @@ _TERMINAL_PUNCTUATION = (".", "!", "?")
 
 
 class SentenceValidationError(RuntimeError):
-    """Report a rejected generated sentence without including its text."""
+    """Report a rejected generated sentence without including its text.
+
+    `rule` is a stable, text-free reason code identifying which check
+    rejected the candidate (for example `"empty"`, `"url"`,
+    `"client_error"`). `finish_reason` propagates the wrapped
+    `GeminiClientError.finish_reason` when the rejection originated from a
+    provider call failure, so a `RECITATION`/`SAFETY` block stays
+    distinguishable from `MAX_TOKENS` or an ordinary transport error. The
+    exception message itself stays generic and never includes candidate
+    text.
+    """
+
+    def __init__(self, rule: str, *, finish_reason: str | None = None) -> None:
+        super().__init__("generated sentence rejected")
+        self.rule = rule
+        self.finish_reason = finish_reason
 
 
 def build_prompt(card: InspirationCard) -> str:
@@ -49,15 +64,15 @@ def validate_generated_sentence(
 ) -> str:
     candidate = raw.strip()
     if not candidate:
-        raise SentenceValidationError("generated sentence rejected")
+        raise SentenceValidationError("empty")
     if _URL_PATTERN.search(candidate):
-        raise SentenceValidationError("generated sentence rejected")
+        raise SentenceValidationError("url")
     if candidate[-1] not in _TERMINAL_PUNCTUATION:
-        raise SentenceValidationError("generated sentence rejected")
+        raise SentenceValidationError("no_terminal_punctuation")
     if any(character in _TERMINAL_PUNCTUATION for character in candidate[:-1]):
-        raise SentenceValidationError("generated sentence rejected")
+        raise SentenceValidationError("mid_terminal_punctuation")
     if source_text is not None and copies_source_span(candidate, source_text):
-        raise SentenceValidationError("generated sentence rejected")
+        raise SentenceValidationError("source_copy")
     return candidate
 
 
@@ -80,11 +95,16 @@ async def generate_sentence(
         structured = await generate_structured(
             session, api_key, build_prompt(card), config
         )
+    except GeminiClientError as exc:
+        raise SentenceValidationError(
+            "client_error", finish_reason=exc.finish_reason
+        ) from None
+    try:
         sentence = structured["sentence"]
-    except (GeminiClientError, KeyError, TypeError):
-        raise SentenceValidationError("generated sentence rejected") from None
+    except (KeyError, TypeError):
+        raise SentenceValidationError("malformed_output") from None
     if not isinstance(sentence, str):
-        raise SentenceValidationError("generated sentence rejected")
+        raise SentenceValidationError("malformed_output")
 
     validated = validate_generated_sentence(sentence, source_text=source_text)
     return history.evaluate_and_record(validated, now, source_text=source_text)

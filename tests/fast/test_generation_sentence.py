@@ -54,14 +54,14 @@ def test_accepts_a_single_clean_sentence() -> None:
 
 @pytest.mark.fast
 @pytest.mark.parametrize(
-    "raw",
+    ("raw", "expected_rule"),
     [
-        "",
-        "   ",
-        "Two sentences. Right here.",
-        "No terminal punctuation at all",
-        "Visit https://example.com for more.",
-        "Check out www.example.com today.",
+        ("", "empty"),
+        ("   ", "empty"),
+        ("Two sentences. Right here.", "mid_terminal_punctuation"),
+        ("No terminal punctuation at all", "no_terminal_punctuation"),
+        ("Visit https://example.com for more.", "url"),
+        ("Check out www.example.com today.", "url"),
     ],
     ids=[
         "empty",
@@ -72,9 +72,10 @@ def test_accepts_a_single_clean_sentence() -> None:
         "www-url",
     ],
 )
-def test_rejects_structurally_invalid_output(raw: str) -> None:
-    with pytest.raises(SentenceValidationError):
+def test_rejects_structurally_invalid_output(raw: str, expected_rule: str) -> None:
+    with pytest.raises(SentenceValidationError) as excinfo:
         validate_generated_sentence(raw)
+    assert excinfo.value.rule == expected_rule
 
 
 @pytest.mark.fast
@@ -84,5 +85,6 @@ def test_rejects_six_consecutive_source_words() -> None:
         "Tonight, a silver promise above the quiet sleeping city makes me smile."
     )
 
-    with pytest.raises(SentenceValidationError):
+    with pytest.raises(SentenceValidationError) as excinfo:
         validate_generated_sentence(candidate, source_text=source)
+    assert excinfo.value.rule == "source_copy"
