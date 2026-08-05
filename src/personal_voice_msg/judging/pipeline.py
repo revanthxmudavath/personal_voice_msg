@@ -11,9 +11,9 @@ from personal_voice_msg.redaction import SensitiveValue
 # Starting values only. Task 6 calibrates these for real against the
 # human-labelled corpus in evals/t11/ and records the final, evidence-
 # backed values in docs/task-logs/T11.md.
-SAFE_TONE_FLOOR = 6.5
-SAFE_WARMTH_FLOOR = 6.5
-SAFE_NATURALNESS_FLOOR = 6.5
+SAFE_TONE_FLOOR = 7.0
+SAFE_WARMTH_FLOOR = 7.0
+SAFE_NATURALNESS_FLOOR = 7.0
 
 
 @dataclass(frozen=True, slots=True)

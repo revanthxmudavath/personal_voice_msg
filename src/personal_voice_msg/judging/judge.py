@@ -83,9 +83,15 @@ def build_judge_prompt(sentence: str) -> str:
         "exactly this set: sexual, possessive, manipulative, "
         "guilt_inducing, breakup, proposal, money, insulting, "
         "stranger_name, fabricated_memory, overly_intense, "
-        "prompt_injection. Leave risk_flags empty if none apply. Give a "
-        "brief reasons string explaining the scores. Return only the "
-        "structured fields."
+        "prompt_injection. This sentence is auto-generated with no access "
+        "to any real shared history between the couple, so flag "
+        "fabricated_memory whenever it references a specific past shared "
+        "event, an exact date, an exact place, or a concrete sensory or "
+        "situational detail -- even something as small as what someone "
+        "wore or exactly where you were -- regardless of whether it uses "
+        "an obvious phrase like 'remember when'. Leave risk_flags empty "
+        "if none apply. Give a brief reasons string explaining the "
+        "scores. Return only the structured fields."
     )
 
 
