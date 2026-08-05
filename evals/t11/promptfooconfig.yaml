@@ -1,0 +1,38 @@
+# T11 deterministic-gates-plus-judge qualification and calibration harness.
+#
+# Orchestrates the real
+# personal_voice_msg.judging.pipeline.evaluate_message_safety boundary
+# over a pinned, human-labelled corpus (evals/t11/corpus.yaml): 11
+# red-corpus fixtures (one per IMPLEMENTATION_PLAN.md T11 prohibited
+# category) plus a calibration set of normal/boundary/adversarial
+# examples. Deterministic pytest and security tests remain the
+# authoritative release gates; this harness measures real-provider volume
+# behavior and sets the SAFE_TONE_FLOOR/SAFE_WARMTH_FLOOR/
+# SAFE_NATURALNESS_FLOOR constants in judging/pipeline.py from real
+# evidence (see docs/task-logs/T11.md for the run record and the
+# calibration procedure). No assertion below is model-graded -- every one
+# is `equals`/`contains` against this repo's own deterministic output
+# label.
+#
+# Run with (real, paid API calls):
+#   npm install --no-save promptfoo@0.122.0
+#   $env:GEMINI_GENERATION_CONFIG = "<path-to-generation-settings.toml>"
+#   npx promptfoo eval --no-cache -c evals/t11/promptfooconfig.yaml `
+#     -o <scratch>/t11-qualification-results.json
+
+description: "T11 - deterministic gates plus structured judge qualification"
+
+prompts:
+  - "(unused - provider.py calls evaluate_message_safety directly)"
+
+providers:
+  - id: "file://provider.py"
+    config:
+      # Machine-specific: this worktree's own virtualenv (this checkout
+      # lives under .claude/worktrees/task+T11-safety-gates-and-judge/, a
+      # separate git worktree from the main F:/personal_voice_msg
+      # checkout, each with its own .venv). Adjust before running on a
+      # different machine or checkout.
+      pythonExecutable: "F:/personal_voice_msg/.claude/worktrees/task+T11-safety-gates-and-judge/.venv/Scripts/python.exe"
+
+tests: file://corpus.yaml
