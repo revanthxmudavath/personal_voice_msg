@@ -1,8 +1,10 @@
 # Personal Voice Message Assistant — Implementation Plan
 
-Status: T01-T09 implemented and audited; T09 selected the deterministic
-discovery fallback; Gemini API Tier 1 Postpay is confirmed and T10 provider
-qualification is next
+Status: T01-T10 implemented and audited; T09 selected the deterministic
+discovery fallback; T10 qualified the owner-confirmed Gemini API Tier 1
+Postpay project (`gemini-3.6-flash`, `temperature=0.2`) with a real
+100-trial run (100% structural/prohibited-field compliance, 99%
+valid-original yield -- see `docs/task-logs/T10.md`); T11 is next
 Primary repository target: `F:\personal_voice_msg`
 Delivery schedule: every day at 07:00 `America/Los_Angeles`
 Development method: agentic, test-driven, no mocked dependencies
@@ -52,7 +54,7 @@ No service must remain running on the owner's laptop.
 | Runtime agent | None retained after the T09 candidate failed protocol and hostile-input gates |
 | Current discovery | Deterministic T07 predefined search workflow |
 | Future agent path | Separate API-based candidate behind the exact restricted tool boundary and a fresh frozen benchmark |
-| T10/T11 inference | Gemini API project is owner-confirmed Tier 1 Postpay; explicit production selection and pinned model/API/client, privacy, reliability, and cost qualification remain required |
+| T10/T11 inference | T10 qualified `gemini-3.6-flash` at `temperature=0.2` via a hand-rolled `aiohttp` client against the owner-confirmed Gemini API Tier 1 Postpay project: real 100-trial run, 100% structural/prohibited-field compliance, 99% valid-original yield (fresh-per-trial metric); a separate accumulating-history measurement found 91/100 unique outputs, recorded as a T11 harness-design input, not a T10 gate failure (`docs/task-logs/T10.md`) |
 | Voice cloning | Pocket TTS voice embedding and synthesis |
 | Audio conversion | FFmpeg to OGG/Opus |
 | WhatsApp bridge | WAHA Core behind a narrow internal sender wrapper |
@@ -926,9 +928,15 @@ The project is complete only when:
 
 ## 13. Immediate next action
 
-Begin T10 from the audited T01-T09 foundation with the owner-confirmed Gemini
-API Tier 1 Postpay project as the provider candidate. Explicitly select and
-freeze the private/production model, API, client, and data-handling
-configuration. Upgrade Node from 22.13 to at least 22.22 before installing the
-current Promptfoo release. Then freeze the T10 corpus, write the failing
-generation-boundary tests, and qualify the real provider.
+Begin T11 (deterministic safety gates and structured judge) from the audited
+T01-T10 foundation. Assemble the red corpus covering sexual content,
+possessiveness, manipulation/guilt, breakup language, proposals/major
+commitments, money requests, insults, stranger names, fabricated memories,
+excessive emotional intensity, and prompt injection. Run deterministic
+prohibitions first, then a separate structured LLM judge (score plus
+reasons, never approval state). Calibrate the judge against
+human-labelled normal/boundary/adversarial examples before setting the
+final safe-corpus acceptance floor of at least 95%. Design T11's own
+Promptfoo qualification harness against a shared, accumulating history
+rather than isolated per-trial databases, per the data point recorded in
+`docs/task-logs/T10.md`.

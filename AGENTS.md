@@ -25,10 +25,23 @@ Build a fully cloud-hosted service that:
 
 ## Current status and blockers
 
-T01 through T09 are implemented and audited. T09 selected the deterministic
+T01 through T10 are implemented and audited. T09 selected the deterministic
 T07 discovery fallback after the restricted LangChain/Gemini candidate failed
-the protocol and hostile-input security gates. The Gemini API project is
-owner-confirmed Tier 1 Postpay; T10 provider qualification is next.
+the protocol and hostile-input security gates. T10 qualified the
+owner-confirmed Gemini API Tier 1 Postpay project (`gemini-3.6-flash`,
+`temperature=0.2`, hand-rolled `aiohttp` client) with a real, unmodified
+100-trial Promptfoo run on 2026-08-05: 100% structural/prohibited-field
+compliance and 99% valid-original yield, measured by the harness's own
+fresh-per-trial-database metric, clearing both of the plan's done-when
+thresholds (`docs/task-logs/T10.md`). A separate post-hoc measurement
+replaying the same 99 recorded outputs against an accumulating shared
+history (this repo's own `fuzz.token_sort_ratio`/`NEAR_DUPLICATE_THRESHOLD`
+dedup metric, rather than the harness's per-trial-isolated databases) found
+91/100 unique outputs; this does not fail T10's gate (the harness's
+isolation was the documented design, and a real near-duplicate is handled
+by production's existing dedup-and-regenerate path, not a task failure) but
+is recorded as a design input for T11's own qualification harness. T11
+(deterministic safety gates and the structured LLM judge) is next.
 
 Confirmed state as of 2026-07-30:
 
@@ -376,9 +389,16 @@ The project is complete only when:
 
 ## Immediate next step
 
-Begin T10 from the audited T01-T09 foundation with the owner-confirmed Gemini
-API Tier 1 Postpay project as the provider candidate. Explicitly select and
-freeze the private/production model, API, client, and data-handling
-configuration. Upgrade Node from 22.13 to at least 22.22 before using the
-current Promptfoo release. Requalify the pins with real calls before accepting
-T10 output.
+Begin T11 (deterministic safety gates and structured judge) from the
+audited T01-T10 foundation. Build the red corpus (sexual content,
+possessiveness, manipulation/guilt, breakup language, proposals/major
+commitments, money requests, insults, stranger names, fabricated memories,
+excessive emotional intensity, prompt injection), run deterministic
+prohibitions first, then a separate structured LLM judge that scores but
+never writes approval state. Calibrate the judge against human-labelled
+normal/boundary/adversarial examples before setting the final safe-corpus
+acceptance floor. When designing T11's own Promptfoo qualification harness,
+account for the accumulating-history near-duplicate data point recorded in
+`docs/task-logs/T10.md` (test against a shared, accumulating history rather
+than isolated per-trial databases, if cross-trial originality is a property
+T11 wants to observe).
