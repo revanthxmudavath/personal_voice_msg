@@ -33,7 +33,7 @@ from typing import Any
 
 import aiohttp
 
-from personal_voice_msg.database import Database
+from personal_voice_msg.database import Database, RecordNotFound
 from personal_voice_msg.discovery.inspiration import (
     Emotion,
     Imagery,
@@ -107,25 +107,16 @@ async def _run_trial(card: InspirationCard) -> str:
                 f"{FAILURE_PREFIX}: accepted decision carried no recorded_message_id"
             )
 
-        return _fetch_sentence(database, decision.recorded_message_id)
+        try:
+            return database.get_message_text(decision.recorded_message_id)
+        except RecordNotFound:
+            return (
+                f"{FAILURE_PREFIX}: recorded message vanished before it could be read"
+            )
     finally:
         # Clean up only after every read of the temp database is done --
         # never a production or shared database, and never left behind.
         temp_path.unlink(missing_ok=True)
-
-
-def _fetch_sentence(database: Database, message_id: int) -> str:
-    connection = database._connect()
-    try:
-        row = connection.execute(
-            "SELECT text FROM messages WHERE id = ?",
-            (message_id,),
-        ).fetchone()
-    finally:
-        connection.close()
-    if row is None:
-        return f"{FAILURE_PREFIX}: recorded message vanished before it could be read"
-    return str(row[0])
 
 
 def call_api(
