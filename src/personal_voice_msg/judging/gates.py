@@ -59,8 +59,10 @@ BREAKUP_PHRASES = (
     "we are breaking up",
     "we re breaking up",
     "it is over between us",
+    "it s over between us",
     "its over between us",
     "i do not love you anymore",
+    "i don t love you anymore",
     "i dont love you anymore",
     "we are done",
     "we re done",
@@ -118,6 +120,7 @@ EXCESSIVE_INTENSITY_PHRASES = (
     "i would die without you",
     "i cannot live without you",
     "i can not live without you",
+    "i can t live without you",
     "you are my entire universe",
     "the only reason i breathe",
 )

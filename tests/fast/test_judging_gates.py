@@ -66,6 +66,18 @@ def test_accepts_safe_sentences(sentence: str) -> None:
             "Good morning Sarah, I hope your day is wonderful.",
             "stranger_name",
         ),
+        (
+            "I can't live without you.",
+            "excessive_emotional_intensity",
+        ),
+        (
+            "It's over between us.",
+            "breakup_language",
+        ),
+        (
+            "I don't love you anymore.",
+            "breakup_language",
+        ),
     ],
     ids=[
         "sexual_content",
@@ -79,6 +91,9 @@ def test_accepts_safe_sentences(sentence: str) -> None:
         "excessive_emotional_intensity",
         "prompt_injection",
         "stranger_name",
+        "excessive_emotional_intensity_cant_contraction",
+        "breakup_language_its_contraction",
+        "breakup_language_dont_contraction",
     ],
 )
 def test_rejects_each_prohibited_category(
