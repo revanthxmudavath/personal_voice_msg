@@ -17,6 +17,7 @@ EXPECTED_TABLES = {
     "audio_artifacts",
     "deliveries",
     "daily_runs",
+    "message_rejections",
 }
 
 
@@ -30,17 +31,27 @@ def read_table_names(path: Path) -> set[str]:
 
 def downgrade_current_database_to_v2(path: Path) -> None:
     with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE IF EXISTS message_rejections")
         connection.execute("DROP TABLE IF EXISTS daily_runs")
         connection.execute(
             "DROP INDEX IF EXISTS message_history_normalized_hash_unique_idx"
         )
-        connection.execute("DELETE FROM schema_migrations WHERE version IN (3, 4)")
+        connection.execute(
+            "DELETE FROM schema_migrations WHERE version IN (3, 4, 5)"
+        )
 
 
 def downgrade_current_database_to_v3(path: Path) -> None:
     with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE IF EXISTS message_rejections")
         connection.execute("DROP TABLE IF EXISTS daily_runs")
-        connection.execute("DELETE FROM schema_migrations WHERE version = 4")
+        connection.execute("DELETE FROM schema_migrations WHERE version IN (4, 5)")
+
+
+def downgrade_current_database_to_v4(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE IF EXISTS message_rejections")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 5")
 
 
 @pytest.mark.fast
@@ -65,7 +76,7 @@ def test_rerunning_migration_is_idempotent(tmp_path: Path) -> None:
         versions = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-    assert versions == [(1,), (2,), (3,), (4,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,)]
 
 
 @pytest.mark.fast
@@ -393,7 +404,7 @@ def test_version_three_database_upgrades_to_daily_runs_without_data_loss(
             "SELECT 1 FROM sqlite_master "
             "WHERE type = 'table' AND name = 'daily_runs'"
         ).fetchone()
-    assert versions == [(1,), (2,), (3,), (4,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,)]
     assert preserved == [
         (
             "migration_probe",
@@ -403,6 +414,58 @@ def test_version_three_database_upgrades_to_daily_runs_without_data_loss(
         )
     ]
     assert daily_runs_table == (1,)
+
+
+@pytest.mark.fast
+def test_version_four_database_upgrades_to_message_rejections_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "version-four.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    downgrade_current_database_to_v4(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO runs (
+                run_kind,
+                pacific_date,
+                state,
+                started_at
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "migration_probe",
+                "2026-08-06",
+                "preserve-me",
+                "2026-08-06T13:50:00+00:00",
+            ),
+        )
+
+    database.migrate()
+
+    with sqlite3.connect(database_path) as connection:
+        versions = connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        preserved = connection.execute(
+            "SELECT run_kind, pacific_date, state, started_at FROM runs"
+        ).fetchall()
+        message_rejections_table = connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'message_rejections'"
+        ).fetchone()
+    assert versions == [(1,), (2,), (3,), (4,), (5,)]
+    assert preserved == [
+        (
+            "migration_probe",
+            "2026-08-06",
+            "preserve-me",
+            "2026-08-06T13:50:00+00:00",
+        )
+    ]
+    assert message_rejections_table == (1,)
 
 
 @pytest.mark.fast
@@ -423,7 +486,7 @@ def test_version_two_database_upgrades_to_unique_normalized_hashes(
         indexes = connection.execute(
             "PRAGMA index_list(message_history)"
         ).fetchall()
-    assert versions == [(1,), (2,), (3,), (4,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,)]
     assert any(
         row[1] == "message_history_normalized_hash_unique_idx" and row[2] == 1
         for row in indexes
