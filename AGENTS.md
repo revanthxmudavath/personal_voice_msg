@@ -25,7 +25,7 @@ Build a fully cloud-hosted service that:
 
 ## Current status and blockers
 
-T01 through T11 are implemented and audited. T09 selected the deterministic
+T01 through T12 are implemented and audited. T09 selected the deterministic
 T07 discovery fallback after the restricted LangChain/Gemini candidate failed
 the protocol and hostile-input security gates. T10 qualified the
 owner-confirmed Gemini API Tier 1 Postpay project (`gemini-3.6-flash`,
@@ -62,6 +62,37 @@ the design note above: 1 trial was dedup-rejected, 15 reached the safety
 gate, 9 were approved. Full record, including the calibration iteration
 history and a known LLM-judge non-determinism caveat, in
 `docs/task-logs/T11.md`. No new dependency or provider was introduced.
+
+A pre-T12 review pass (T11b, `docs/task-logs/T11b-pre-T12-hardening.md`)
+re-verified T03/T11 as genuinely ready, applied two behavior-preserving
+efficiency fixes to `judging/gates.py` and `judging/judge.py`, and resolved
+two design questions T12 needed: a new additive `message_rejections` table
+(`SCHEMA_V5`) records safety rejections instead of a new `MessageState`
+value, and the plan's "safe reserve" was renamed "reserve buffer" to avoid
+colliding with the existing `MessageState.RESERVED` meaning.
+
+T12 (approved queue and safe reserve) is complete. Before T12 there was no
+production code driving `DISCOVERED -> VALIDATED -> APPROVED -> QUEUED` or
+calling T11's `evaluate_message_safety` at all -- T12 is that orchestration
+layer. `database.py` gained `SCHEMA_V5` (`message_rejections`, additive)
+and three new atomic methods -- `reject_message` (walks
+`DISCOVERED -> VALIDATED` if needed, then records the rejection in one
+transaction), `approve_message` (walks to `QUEUED` via the existing
+`CONTENT_TRANSITIONS` table), and `next_unjudged_message`/
+`count_queued_messages` for candidate selection and queue health. The new
+`queue_refill.py` module's `refill_queue()` loops these together against
+T11's safety pipeline until `MIN_QUEUE_SIZE = 30` `QUEUED` messages exist or
+candidates run out, returning a computed `QueueHealth` signal for a future
+T19 alert (T12 does not itself send owner notifications -- that is T19's
+scope). The reserve buffer is a computed threshold over `QUEUED` row count,
+not a new column or separate pool; T03's existing `reserve_next_message`
+already only draws from `QUEUED`, so "exhaustion selects only the
+pre-approved buffer" and "no buffer means no send" are enforced by that
+existing method once refill is wired up. All of T12's fast tests use the
+same real-gate-short-circuit technique T11 established (no live judge call,
+no mock) -- full mapping of plan red tests to tests, and fresh
+`pytest -m fast`/`-m security`/`mypy`/`ruff`/`repository_policy.py`
+verification evidence, in `docs/task-logs/T12.md`.
 
 Confirmed state as of 2026-07-30:
 
@@ -409,14 +440,5 @@ The project is complete only when:
 
 ## Immediate next step
 
-Begin T12 (approved queue and safe reserve) from the audited T01-T11
-foundation. T11 leaves `evaluate_message_safety` producing a
-`SafetyDecision` per candidate sentence; T12's job is to turn approved
-decisions into a durably persisted queue, maintaining at least 30 approved
-messages plus a small safe reserve, with atomic reservation and
-queue-health alerts. Red tests: discovery failure preserves the existing
-queue, rejected candidates never enter the queue, queue refill cannot
-modify already-sent records, exhaustion selects only from the pre-approved
-reserve, and no reserve means no send -- keep the same fail-closed posture
-T11 established: an empty or exhausted reserve is a skipped send, never a
-fallback to an unapproved sentence.
+Begin T13 (secure voice enrollment) from the audited T01-T12 foundation,
+per `IMPLEMENTATION_PLAN.md`.

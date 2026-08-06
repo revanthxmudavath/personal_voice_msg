@@ -59,7 +59,7 @@ ALL_STATES_SQL = ", ".join(f"'{state.value}'" for state in MessageState)
 DELIVERY_STATES_SQL = ", ".join(
     f"'{state.value}'" for state in DELIVERY_TRANSITIONS
 )
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 OPAQUE_RECIPIENT_KEY = re.compile(r"recipient_[A-Za-z0-9][A-Za-z0-9_-]{2,119}")
 
 
@@ -242,6 +242,17 @@ SCHEMA_V4_STATEMENTS = (
     )
     """,
 )
+SCHEMA_V5_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS message_rejections (
+        id INTEGER PRIMARY KEY,
+        message_id INTEGER NOT NULL UNIQUE
+            REFERENCES messages(id) ON DELETE RESTRICT,
+        reason TEXT NOT NULL,
+        rejected_at TEXT NOT NULL
+    )
+    """,
+)
 EXPECTED_SCHEMA_V1_OBJECTS = {
     ("table", "schema_migrations"): SCHEMA_V1_STATEMENTS[0],
     ("table", "sources"): SCHEMA_V1_STATEMENTS[1],
@@ -272,6 +283,10 @@ EXPECTED_SCHEMA_V3_OBJECTS = {
 EXPECTED_SCHEMA_V4_OBJECTS = {
     **EXPECTED_SCHEMA_V3_OBJECTS,
     ("table", "daily_runs"): SCHEMA_V4_STATEMENTS[0],
+}
+EXPECTED_SCHEMA_V5_OBJECTS = {
+    **EXPECTED_SCHEMA_V4_OBJECTS,
+    ("table", "message_rejections"): SCHEMA_V5_STATEMENTS[0],
 }
 
 
@@ -370,7 +385,8 @@ class Database:
                 {1},
                 {1, 2},
                 {1, 2, 3},
-                {1, 2, 3, CURRENT_SCHEMA_VERSION},
+                {1, 2, 3, 4},
+                {1, 2, 3, 4, CURRENT_SCHEMA_VERSION},
             ):
                 raise MigrationError("database has an unknown migration version")
             connection.execute("PRAGMA journal_mode = WAL")
@@ -382,7 +398,8 @@ class Database:
                 {1},
                 {1, 2},
                 {1, 2, 3},
-                {1, 2, 3, CURRENT_SCHEMA_VERSION},
+                {1, 2, 3, 4},
+                {1, 2, 3, 4, CURRENT_SCHEMA_VERSION},
             ):
                 raise MigrationError("database has an unknown migration version")
             if not versions:
@@ -436,10 +453,20 @@ class Database:
                     connection.execute(statement)
                 connection.execute(
                     "INSERT INTO schema_migrations (version) VALUES (?)",
+                    (4,),
+                )
+                versions = {1, 2, 3, 4}
+
+            _validate_schema(connection, EXPECTED_SCHEMA_V4_OBJECTS)
+            if versions == {1, 2, 3, 4}:
+                for statement in SCHEMA_V5_STATEMENTS:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?)",
                     (CURRENT_SCHEMA_VERSION,),
                 )
 
-            _validate_schema(connection, EXPECTED_SCHEMA_V4_OBJECTS)
+            _validate_schema(connection, EXPECTED_SCHEMA_V5_OBJECTS)
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -607,12 +634,57 @@ class Database:
         )
         return message_id
 
+    def _transition_message_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        message_id: int,
+        target: MessageState,
+        timestamp: str,
+    ) -> None:
+        row = connection.execute(
+            "SELECT state FROM messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
+        if row is None:
+            raise RecordNotFound("message does not exist")
+        current = MessageState(row[0])
+        if CONTENT_TRANSITIONS.get(current) is not target:
+            raise InvalidTransition(
+                f"message cannot transition from {current.value} to {target.value}"
+            )
+        updated = connection.execute(
+            """
+            UPDATE messages
+            SET state = ?, updated_at = ?
+            WHERE id = ? AND state = ?
+            """,
+            (target.value, timestamp, message_id, current.value),
+        )
+        if updated.rowcount != 1:
+            raise DatabaseInvariantError("message state changed concurrently")
+
     def transition_message(
         self,
         message_id: int,
         target: MessageState,
         now: datetime,
     ) -> None:
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            self._transition_message_in_transaction(
+                connection, message_id, target, timestamp
+            )
+
+    def reject_message(self, message_id: int, reason: str, now: datetime) -> None:
+        """Atomically record a safety rejection without deleting the message.
+
+        A message that fails safety review stays at `VALIDATED` (walking
+        there first from `DISCOVERED` if needed, in the same transaction)
+        with a matching `message_rejections` row -- see
+        `IMPLEMENTATION_PLAN.md`'s T12 "Pre-T12 decisions" block.
+        """
+        if not reason.strip():
+            raise ValueError("rejection reason must not be empty")
         timestamp = _timestamp(now)
         with self._transaction() as connection:
             row = connection.execute(
@@ -622,20 +694,90 @@ class Database:
             if row is None:
                 raise RecordNotFound("message does not exist")
             current = MessageState(row[0])
-            if CONTENT_TRANSITIONS.get(current) is not target:
-                raise InvalidTransition(
-                    f"message cannot transition from {current.value} to {target.value}"
+            if current is MessageState.DISCOVERED:
+                self._transition_message_in_transaction(
+                    connection, message_id, MessageState.VALIDATED, timestamp
                 )
-            updated = connection.execute(
+            elif current is not MessageState.VALIDATED:
+                raise InvalidTransition(
+                    f"message cannot be rejected from state {current.value}"
+                )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO message_rejections (message_id, reason, rejected_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (message_id, reason, timestamp),
+                )
+            except sqlite3.IntegrityError:
+                raise DatabaseInvariantError(
+                    "message already has a rejection recorded"
+                ) from None
+
+    def approve_message(self, message_id: int, now: datetime) -> None:
+        """Atomically walk a message from its current content state to `QUEUED`."""
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT state FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                raise RecordNotFound("message does not exist")
+            current = MessageState(row[0])
+            if current is MessageState.QUEUED:
+                raise InvalidTransition("message is already queued")
+            while current is not MessageState.QUEUED:
+                target = CONTENT_TRANSITIONS.get(current)
+                if target is None:
+                    raise InvalidTransition(
+                        f"message cannot be approved from state {current.value}"
+                    )
+                self._transition_message_in_transaction(
+                    connection, message_id, target, timestamp
+                )
+                current = target
+
+    def next_unjudged_message(self) -> tuple[int, str] | None:
+        """Return the oldest message still awaiting a safety decision.
+
+        Candidates are `DISCOVERED` (never processed) or `VALIDATED`
+        without a `message_rejections` row (approved-in-progress or
+        interrupted before judging finished); a `VALIDATED` message that
+        already has a rejection row is permanently excluded.
+        """
+        connection = self._connect()
+        try:
+            row = connection.execute(
                 """
-                UPDATE messages
-                SET state = ?, updated_at = ?
-                WHERE id = ? AND state = ?
+                SELECT id, text FROM messages
+                WHERE state IN (?, ?)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM message_rejections
+                      WHERE message_rejections.message_id = messages.id
+                  )
+                ORDER BY id
+                LIMIT 1
                 """,
-                (target.value, timestamp, message_id, current.value),
-            )
-            if updated.rowcount != 1:
-                raise DatabaseInvariantError("message state changed concurrently")
+                (MessageState.DISCOVERED.value, MessageState.VALIDATED.value),
+            ).fetchone()
+        finally:
+            connection.close()
+        return None if row is None else (int(row[0]), str(row[1]))
+
+    def count_queued_messages(self) -> int:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM messages WHERE state = ?",
+                (MessageState.QUEUED.value,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise DatabaseInvariantError("queued message count query returned no row")
+        return int(row[0])
 
     def reserve_next_message(
         self,
