@@ -167,14 +167,24 @@ _PHRASE_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("prompt_injection", PROMPT_INJECTION_PHRASES),
 )
 
+# Compiled once at import time -- the phrase lists above are static module
+# constants, so there is no reason to recompile the same ~95 regexes on
+# every evaluate_gates() call.
+_COMPILED_PHRASE_CATEGORIES: tuple[
+    tuple[str, tuple[tuple[str, re.Pattern[str]], ...]], ...
+] = tuple(
+    (category, tuple((phrase, _phrase_pattern(phrase)) for phrase in phrases))
+    for category, phrases in _PHRASE_CATEGORIES
+)
+
 
 def evaluate_gates(candidate: str) -> GateDecision:
     normalized = normalize_text(candidate)
     violations: list[GateViolation] = []
 
-    for category, phrases in _PHRASE_CATEGORIES:
-        for phrase in phrases:
-            if _phrase_pattern(phrase).search(normalized):
+    for category, phrase_patterns in _COMPILED_PHRASE_CATEGORIES:
+        for phrase, pattern in phrase_patterns:
+            if pattern.search(normalized):
                 violations.append(GateViolation(category, phrase))
                 break
 

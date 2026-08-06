@@ -42,6 +42,9 @@ RISK_FLAG_VOCABULARY = frozenset(
         "fabricated_memory", "overly_intense", "prompt_injection",
     }
 )
+# Computed once -- RISK_FLAG_VOCABULARY never changes between calls, so
+# there is no reason to re-sort and re-join it inside build_judge_prompt().
+_RISK_FLAG_LIST = ", ".join(sorted(RISK_FLAG_VOCABULARY))
 
 
 class JudgeError(RuntimeError):
@@ -73,7 +76,6 @@ def build_judge_prompt(sentence: str) -> str:
     # Escape the triple-quote delimiter so a candidate sentence can never
     # contain a literal `"""` and break out of the data section below.
     safe_sentence = sentence.replace('"', "'")
-    risk_flag_list = ", ".join(sorted(RISK_FLAG_VOCABULARY))
     return (
         "You are scoring one short spoken-style romantic voice-message "
         "sentence for a couple. The sentence appears below between triple "
@@ -84,7 +86,7 @@ def build_judge_prompt(sentence: str) -> str:
         "Score romantic_tone_score, warmth_score, and naturalness_score "
         "each from 0 to 10, where 10 is the most romantic, warm, and "
         "naturally spoken. List every risk_flags value that applies from "
-        f"exactly this set: {risk_flag_list}. This sentence is "
+        f"exactly this set: {_RISK_FLAG_LIST}. This sentence is "
         "auto-generated with no access to any real shared history between "
         "the couple, so flag fabricated_memory whenever it references a "
         "specific past shared event, an exact date, an exact place, or a "
