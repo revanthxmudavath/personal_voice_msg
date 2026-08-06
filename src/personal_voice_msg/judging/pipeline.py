@@ -8,9 +8,9 @@ from personal_voice_msg.judging.gates import GateViolation, evaluate_gates
 from personal_voice_msg.judging.judge import JudgeError, JudgeResult, judge_sentence
 from personal_voice_msg.redaction import SensitiveValue
 
-# Starting values only. Task 6 calibrates these for real against the
-# human-labelled corpus in evals/t11/ and records the final, evidence-
-# backed values in docs/task-logs/T11.md.
+# Final calibrated values from the real 42-row Promptfoo run recorded in
+# docs/task-logs/T11.md. Do not change without a fresh calibration run --
+# see IMPLEMENTATION_PLAN.md's T11 section for the requalification rule.
 SAFE_TONE_FLOOR = 6.5
 SAFE_WARMTH_FLOOR = 6.5
 SAFE_NATURALNESS_FLOOR = 6.5
@@ -24,6 +24,28 @@ class SafetyDecision:
     judge_result: JudgeResult | None = None
 
 
+def decide_from_judge_result(judge_result: JudgeResult) -> SafetyDecision:
+    """Deterministically turn a judge result into an approval decision.
+
+    Plain comparisons only -- the judge itself never sets `approved`, so
+    no judge result can bypass this deterministic code.
+    """
+
+    if judge_result.risk_flags:
+        return SafetyDecision(
+            approved=False, reason="judge_risk_flag", judge_result=judge_result
+        )
+    if (
+        judge_result.romantic_tone_score < SAFE_TONE_FLOOR
+        or judge_result.warmth_score < SAFE_WARMTH_FLOOR
+        or judge_result.naturalness_score < SAFE_NATURALNESS_FLOOR
+    ):
+        return SafetyDecision(
+            approved=False, reason="judge_score_floor", judge_result=judge_result
+        )
+    return SafetyDecision(approved=True, reason=None, judge_result=judge_result)
+
+
 async def evaluate_message_safety(
     session: aiohttp.ClientSession,
     api_key: SensitiveValue[str],
@@ -34,9 +56,9 @@ async def evaluate_message_safety(
     Runs the local prohibition gates first; a violation rejects
     immediately without spending an API call on the judge. Only a
     gate-clean sentence reaches the structured judge. The judge's score
-    and risk_flags are read by this function's own plain comparisons below
-    -- the judge itself never sets `approved`, so no judge result can
-    bypass this deterministic code.
+    and risk_flags are read by `decide_from_judge_result`'s own plain
+    comparisons -- the judge itself never sets `approved`, so no judge
+    result can bypass this deterministic code.
     """
 
     gate_decision = evaluate_gates(sentence)
@@ -52,16 +74,4 @@ async def evaluate_message_safety(
     except JudgeError:
         return SafetyDecision(approved=False, reason="judge_error")
 
-    if judge_result.risk_flags:
-        return SafetyDecision(
-            approved=False, reason="judge_risk_flag", judge_result=judge_result
-        )
-    if (
-        judge_result.romantic_tone_score < SAFE_TONE_FLOOR
-        or judge_result.warmth_score < SAFE_WARMTH_FLOOR
-        or judge_result.naturalness_score < SAFE_NATURALNESS_FLOOR
-    ):
-        return SafetyDecision(
-            approved=False, reason="judge_score_floor", judge_result=judge_result
-        )
-    return SafetyDecision(approved=True, reason=None, judge_result=judge_result)
+    return decide_from_judge_result(judge_result)

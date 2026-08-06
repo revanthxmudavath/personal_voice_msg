@@ -19,7 +19,7 @@ from personal_voice_msg.discovery.inspiration import (
 )
 from personal_voice_msg.generation.sentence import generate_sentence
 from personal_voice_msg.history import MessageHistory
-from personal_voice_msg.judging.pipeline import evaluate_message_safety
+from personal_voice_msg.judging.pipeline import SafetyDecision, evaluate_message_safety
 from personal_voice_msg.redaction import SensitiveValue
 
 if os.environ.get("T11_LIVE_END_TO_END") != "1":
@@ -51,12 +51,12 @@ def _real_api_key() -> SensitiveValue[str]:
     return SensitiveValue(Path(key_file).read_text(encoding="utf-8").strip())
 
 
-async def _run_all(database_path: Path) -> list[bool | None]:
+async def _run_all(database_path: Path) -> list[SafetyDecision | None]:
     database = Database(database_path)
     database.migrate()
     history = MessageHistory(database)
     api_key = _real_api_key()
-    approvals: list[bool | None] = []
+    results: list[SafetyDecision | None] = []
     async with aiohttp.ClientSession() as session:
         for card in CARDS:
             decision = await generate_sentence(
@@ -66,21 +66,38 @@ async def _run_all(database_path: Path) -> list[bool | None]:
                 # Real dedup rejection against the accumulating history --
                 # expected to happen at least once across 16 trials, per
                 # the ~8%-collision rate recorded in docs/task-logs/T10.md.
-                approvals.append(None)
+                results.append(None)
                 continue
             text = database.get_message_text(decision.recorded_message_id)
             safety = await evaluate_message_safety(session, api_key, text)
-            approvals.append(safety.approved)
-    return approvals
+            results.append(safety)
+    return results
 
 
 @pytest.mark.live
 def test_generation_and_safety_gate_against_a_shared_accumulating_history(
     tmp_path: Path,
 ) -> None:
-    approvals = asyncio.run(_run_all(tmp_path / "accumulating-history.sqlite3"))
+    results = asyncio.run(_run_all(tmp_path / "accumulating-history.sqlite3"))
 
-    generated = [approved for approved in approvals if approved is not None]
+    generated = [safety for safety in results if safety is not None]
     assert generated, "at least one trial must produce a recorded sentence"
-    for approved in generated:
-        assert isinstance(approved, bool)
+    for safety in generated:
+        assert isinstance(safety.approved, bool)
+        # The two fields must always agree: approved iff there is no
+        # rejection reason. This is a real invariant of SafetyDecision,
+        # not tautological -- it would fail if the pipeline's wiring
+        # ever set one field without the other.
+        assert safety.approved is (safety.reason is None)
+        # Whenever the judge ran to completion and its scores/risk_flags
+        # actually drove the decision ("judge_risk_flag"/"judge_score_floor",
+        # or an approval that reached the judge), the result must have been
+        # captured, not silently dropped. "judge_error" is deliberately
+        # excluded here even though it shares the "judge_" prefix textually
+        # -- it means the judge call itself failed, so no JudgeResult exists
+        # to capture; asserting non-None there would be asserting the
+        # opposite of what actually happened.
+        if safety.reason in ("judge_risk_flag", "judge_score_floor") or (
+            safety.approved and safety.reason is None
+        ):
+            assert safety.judge_result is not None

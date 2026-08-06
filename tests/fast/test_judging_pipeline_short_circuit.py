@@ -16,6 +16,13 @@ async def _evaluate(sentence: str) -> object:
         )
 
 
+# Constructing a real aiohttp.ClientSession here is safe in a `fast` test:
+# the gate short-circuits before the session is ever used for a network
+# call, so no request leaves the process. If the gate ever regressed and
+# let this sentence through to the judge, the observable failure would be
+# a "judge_error" decision (from the invalid API key) or a hang/timeout --
+# not a false pass -- so this test cannot silently pass for the wrong
+# reason even without a mock.
 @pytest.mark.fast
 def test_gate_rejected_sentence_never_calls_the_judge() -> None:
     # An invalid API key would make any real judge call fail loudly

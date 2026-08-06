@@ -25,7 +25,7 @@ Build a fully cloud-hosted service that:
 
 ## Current status and blockers
 
-T01 through T10 are implemented and audited. T09 selected the deterministic
+T01 through T11 are implemented and audited. T09 selected the deterministic
 T07 discovery fallback after the restricted LangChain/Gemini candidate failed
 the protocol and hostile-input security gates. T10 qualified the
 owner-confirmed Gemini API Tier 1 Postpay project (`gemini-3.6-flash`,
@@ -40,8 +40,7 @@ dedup metric, rather than the harness's per-trial-isolated databases) found
 91/100 unique outputs; this does not fail T10's gate (the harness's
 isolation was the documented design, and a real near-duplicate is handled
 by production's existing dedup-and-regenerate path, not a task failure) but
-is recorded as a design input for T11's own qualification harness. T11
-(deterministic safety gates and the structured LLM judge) is next.
+is recorded as a design input for T11's own qualification harness.
 
 T11 (deterministic safety gates and structured judge) is complete. Two
 layers gate a T10-generated sentence: eleven local deterministic
