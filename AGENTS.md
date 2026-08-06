@@ -25,7 +25,7 @@ Build a fully cloud-hosted service that:
 
 ## Current status and blockers
 
-T01 through T10 are implemented and audited. T09 selected the deterministic
+T01 through T11 are implemented and audited. T09 selected the deterministic
 T07 discovery fallback after the restricted LangChain/Gemini candidate failed
 the protocol and hostile-input security gates. T10 qualified the
 owner-confirmed Gemini API Tier 1 Postpay project (`gemini-3.6-flash`,
@@ -40,8 +40,28 @@ dedup metric, rather than the harness's per-trial-isolated databases) found
 91/100 unique outputs; this does not fail T10's gate (the harness's
 isolation was the documented design, and a real near-duplicate is handled
 by production's existing dedup-and-regenerate path, not a task failure) but
-is recorded as a design input for T11's own qualification harness. T11
-(deterministic safety gates and the structured LLM judge) is next.
+is recorded as a design input for T11's own qualification harness.
+
+T11 (deterministic safety gates and structured judge) is complete. Two
+layers gate a T10-generated sentence: eleven local deterministic
+prohibition categories (`judging/gates.py`, zero API cost, checked first)
+followed by a structured Gemini judge (`judging/judge.py`, same
+`gemini-3.6-flash` pin, `temperature=0.0`) that scores tone/warmth/
+naturalness and lists risk flags but never itself sets approval state --
+`judging/pipeline.py`'s `evaluate_message_safety` is the one deterministic
+function that reads the judge's returned fields with plain comparisons.
+The judge was calibrated with a real, paid 42-row Promptfoo run (11
+red-corpus fixtures, 15 normal + 8 boundary rows, 8 adversarial rows) over
+5 total real runs across 2 fix rounds -- the final run cleared all three
+conditions at once: 11/11 red-corpus rejected, 8/8 adversarial rejected,
+19/19 normal+boundary-approved accepted (100%), with final calibrated
+floors `SAFE_TONE_FLOOR = SAFE_WARMTH_FLOOR = SAFE_NATURALNESS_FLOOR =
+6.5`. A separate end-to-end test chained real generation and safety
+evaluation over 16 trials against one shared, accumulating database, per
+the design note above: 1 trial was dedup-rejected, 15 reached the safety
+gate, 9 were approved. Full record, including the calibration iteration
+history and a known LLM-judge non-determinism caveat, in
+`docs/task-logs/T11.md`. No new dependency or provider was introduced.
 
 Confirmed state as of 2026-07-30:
 
@@ -389,16 +409,14 @@ The project is complete only when:
 
 ## Immediate next step
 
-Begin T11 (deterministic safety gates and structured judge) from the
-audited T01-T10 foundation. Build the red corpus (sexual content,
-possessiveness, manipulation/guilt, breakup language, proposals/major
-commitments, money requests, insults, stranger names, fabricated memories,
-excessive emotional intensity, prompt injection), run deterministic
-prohibitions first, then a separate structured LLM judge that scores but
-never writes approval state. Calibrate the judge against human-labelled
-normal/boundary/adversarial examples before setting the final safe-corpus
-acceptance floor. When designing T11's own Promptfoo qualification harness,
-account for the accumulating-history near-duplicate data point recorded in
-`docs/task-logs/T10.md` (test against a shared, accumulating history rather
-than isolated per-trial databases, if cross-trial originality is a property
-T11 wants to observe).
+Begin T12 (approved queue and safe reserve) from the audited T01-T11
+foundation. T11 leaves `evaluate_message_safety` producing a
+`SafetyDecision` per candidate sentence; T12's job is to turn approved
+decisions into a durably persisted queue, maintaining at least 30 approved
+messages plus a small safe reserve, with atomic reservation and
+queue-health alerts. Red tests: discovery failure preserves the existing
+queue, rejected candidates never enter the queue, queue refill cannot
+modify already-sent records, exhaustion selects only from the pre-approved
+reserve, and no reserve means no send -- keep the same fail-closed posture
+T11 established: an empty or exhausted reserve is a skipped send, never a
+fallback to an unapproved sentence.

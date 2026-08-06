@@ -1,10 +1,15 @@
 # Personal Voice Message Assistant — Implementation Plan
 
-Status: T01-T10 implemented and audited; T09 selected the deterministic
+Status: T01-T11 implemented and audited; T09 selected the deterministic
 discovery fallback; T10 qualified the owner-confirmed Gemini API Tier 1
 Postpay project (`gemini-3.6-flash`, `temperature=0.2`) with a real
 100-trial run (100% structural/prohibited-field compliance, 99%
-valid-original yield -- see `docs/task-logs/T10.md`); T11 is next
+valid-original yield -- see `docs/task-logs/T10.md`); T11 added
+deterministic safety gates plus a structured Gemini judge, calibrated with
+a real 42-row Promptfoo run to 100% pass (11/11 red-corpus rejected, 8/8
+adversarial rejected, 19/19 normal+boundary-approved accepted) at final
+floors `SAFE_TONE_FLOOR = SAFE_WARMTH_FLOOR = SAFE_NATURALNESS_FLOOR = 6.5`
+-- see `docs/task-logs/T11.md`; T12 is next
 Primary repository target: `F:\personal_voice_msg`
 Delivery schedule: every day at 07:00 `America/Los_Angeles`
 Development method: agentic, test-driven, no mocked dependencies
@@ -928,15 +933,15 @@ The project is complete only when:
 
 ## 13. Immediate next action
 
-Begin T11 (deterministic safety gates and structured judge) from the audited
-T01-T10 foundation. Assemble the red corpus covering sexual content,
-possessiveness, manipulation/guilt, breakup language, proposals/major
-commitments, money requests, insults, stranger names, fabricated memories,
-excessive emotional intensity, and prompt injection. Run deterministic
-prohibitions first, then a separate structured LLM judge (score plus
-reasons, never approval state). Calibrate the judge against
-human-labelled normal/boundary/adversarial examples before setting the
-final safe-corpus acceptance floor of at least 95%. Design T11's own
-Promptfoo qualification harness against a shared, accumulating history
-rather than isolated per-trial databases, per the data point recorded in
-`docs/task-logs/T10.md`.
+Begin T12 (approved queue and safe reserve) from the audited T01-T11
+foundation. T11 leaves `judging/pipeline.py`'s `evaluate_message_safety`
+producing a `SafetyDecision` per candidate sentence; T12 turns approved
+decisions into a durably persisted queue against the existing SQLite
+`Database` boundary, maintaining at least 30 approved messages plus a small
+safe reserve, with atomic reservation and queue-health alerts. Red tests:
+discovery failure preserves the existing queue, rejected candidates never
+enter the queue, queue refill cannot modify already-sent records,
+exhaustion selects only from the pre-approved reserve, and no reserve means
+no send -- keep the same fail-closed posture T11 established (an empty or
+exhausted reserve is a skipped send, never a fallback to an unapproved
+sentence).
