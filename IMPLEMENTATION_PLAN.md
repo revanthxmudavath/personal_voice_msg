@@ -653,17 +653,55 @@ acceptance, and no model result can bypass deterministic approval code.
 
 Dependencies: T03, T11
 
+Pre-T12 decisions (confirmed 2026-08-06, discussion recorded in
+`docs/task-logs/T11b-pre-T12-hardening.md`):
+
+- A safety-rejected message is recorded in a new **`message_rejections`**
+  table (`message_id REFERENCES messages(id)`, `reason`, `rejected_at`) —
+  not a new `MessageState` value. `reason` stores
+  `evaluate_message_safety`'s own rejection reason
+  (`gate_violation` / `judge_risk_flag` / `judge_score_floor` /
+  `judge_error`), which doubles as free audit data for judge-calibration
+  debugging later. This is a purely additive `SCHEMA_V5` migration (one
+  `CREATE TABLE IF NOT EXISTS`) — it does not touch `messages`'s `state`
+  `CHECK` constraint, `CONTENT_TRANSITIONS`'s shape, or any existing FK
+  (`deliveries`, `audio_artifacts`, `message_history` all reference
+  `messages(id)`, so a `CHECK`-constraint table rebuild was rejected as
+  unnecessary migration risk for a requirement a side table satisfies
+  fully). A message that fails safety review simply stays at `VALIDATED`
+  with a matching `message_rejections` row; a refill query excludes it via
+  `NOT EXISTS (SELECT 1 FROM message_rejections WHERE message_id = ...)`.
+- Deliberately **not** fixed as part of T12: `database.py`'s
+  `EXPECTED_SCHEMA_V1_OBJECTS` derives its `messages` table CHECK text from
+  the *live* `MessageState` enum (`ALL_STATES_SQL`) rather than a frozen
+  historical literal. This means a *future* task that legitimately needs to
+  grow `MessageState` (not T12, since T12 no longer needs to) will corrupt
+  `_validate_schema` for every already-migrated database unless that task
+  pins `EXPECTED_SCHEMA_V1_OBJECTS`'s historical text first. Tracked here so
+  it is not rediscovered from scratch; fix it in whichever task first adds a
+  new `MessageState` member.
+- The plan's "safe reserve" is renamed **reserve buffer** below, to avoid
+  colliding with the existing `MessageState.RESERVED` (which means
+  "atomically picked for today's specific delivery attempt" — an unrelated,
+  already-taken meaning). The buffer's actual representation (a column/flag
+  on `messages`, or a computed threshold over `QUEUED` rows) is an open
+  implementation decision for T12's own red-test-writing step, not resolved
+  here.
+
 Red tests:
 
 - discovery failure preserves the existing queue.
 - rejected candidates never enter the queue.
+- a rejected message gets exactly one `message_rejections` row and is never
+  re-submitted to the judge on a later refill pass.
 - queue refill cannot modify sent records.
-- exhaustion selects only a pre-approved reserve.
-- no reserve means no send.
+- exhaustion selects only a pre-approved reserve buffer.
+- no reserve buffer means no send.
 
 Implementation:
 
-- Maintain at least 30 approved messages and a small safe reserve.
+- Add the `message_rejections` table via an additive `SCHEMA_V5` migration.
+- Maintain at least 30 approved messages and a small reserve buffer.
 - Add atomic reservation and queue-health alerts.
 
 Done when repeated refill, failure, and restart tests preserve queue invariants.

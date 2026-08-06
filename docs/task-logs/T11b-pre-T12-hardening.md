@@ -192,3 +192,34 @@ represented in the state machine (new `MessageState` + migration, vs. an
 alternative rejection-tracking mechanism), and (2) what to call the
 "safe reserve" pool so it does not collide with the existing
 `MessageState.RESERVED` delivery-reservation meaning.
+
+## Addendum: both open questions resolved (2026-08-06)
+
+A follow-up brainstorming discussion (`superpowers:brainstorming`) resolved
+both open questions before T12 implementation started. Full decisions and
+their rationale are recorded directly in `IMPLEMENTATION_PLAN.md`'s T12
+section (its new "Pre-T12 decisions" block); summarized here for this log's
+own record:
+
+- **Rejection representation**: a new additive `message_rejections` table
+  (`SCHEMA_V5`), not a new `MessageState` value. The state-machine-purity
+  alternative (`MessageState.REJECTED` via a `CHECK`-constraint table
+  rebuild) was considered and explicitly rejected: `messages` is
+  referenced by three other tables' foreign keys plus an FTS5 shadow table
+  and an immutability trigger, making a rebuild meaningfully riskier than a
+  side table for a requirement ("don't re-judge a rejected message") a
+  `NOT EXISTS` subquery satisfies completely. This also matches
+  `CLAUDE.md`'s Karpathy no-speculative-complexity rule more directly than
+  the rebuild path would have.
+- **Reserve naming**: "reserve buffer", replacing "safe reserve"
+  throughout the plan. The actual buffer mechanism (column/flag vs.
+  computed threshold) is intentionally left open for T12's own
+  red-test-writing step.
+- A real bug this discussion surfaced — `EXPECTED_SCHEMA_V1_OBJECTS`
+  deriving its expected `messages` CHECK text from the live `MessageState`
+  enum instead of a frozen historical literal, which would silently break
+  `_validate_schema` for every existing database the moment a future task
+  adds a new `MessageState` member — is tracked in the plan's T12 section
+  but deliberately left unfixed here, since T12's chosen design no longer
+  triggers it. Fix it in whichever future task actually grows
+  `MessageState`.
