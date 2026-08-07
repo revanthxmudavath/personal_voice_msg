@@ -144,7 +144,9 @@ Confirmed state as of 2026-07-30:
   keyring token as invalid.
 - Docker Desktop is running and `docker info` succeeds.
 - Python 3.12.4, `uv`, Git, and Node 22.13 are installed.
-- FFmpeg and ffprobe are not installed; they are required before T14.
+- FFmpeg and ffprobe are installed and working (verified during T14;
+  corrects the earlier statement here that they were missing --
+  `docs/task-logs/T14.md`).
 
 ### 2026-08-04 pre-T10 audit addendum (T08b)
 
@@ -458,9 +460,51 @@ The project is complete only when:
 - all tests use real implementations or protocol endpoints without mocks;
 - repository history contains no secrets or private voice/session artifacts.
 
+T14 (Pocket TTS and OGG/Opus pipeline) is complete, including the owner's
+listening acceptance, on `task/T14-pocket-tts-opus-pipeline`. A pre-T14
+audit had stated FFmpeg and ffprobe were not installed; direct
+re-verification at the start of this task found they actually are
+(`ffmpeg`/`ffprobe` 9.0-full_build via winget, `--enable-libopus`) -- a
+factual correction, recorded in `docs/task-logs/T14.md`. New module
+`audio_pipeline.py` adds `synthesize_to_wav` (real Pocket TTS, reusing
+T13's exported `.safetensors` embedding directly, calibrated
+`eos_threshold=0.0`/`frames_after_eos=10`), `convert_to_opus` (real
+FFmpeg, WhatsApp-standard mono/48kHz/24kbps Opus), `validate_audio` (real
+ffprobe format/duration probe plus a `soundfile`-decoded silence/clipping
+check), `produce_voice_note` (orchestrates all three and marks the
+delivery `AUDIO_READY` via the existing `transition_delivery`, leaving no
+partial file or state change on any failure), and
+`remove_audio_after_delivery` (deletes the temp file only once the
+delivery is confirmed `SENT`). No `database.py` changes were needed --
+T03/T12's existing state-machine methods already covered everything T14's
+red tests require. The long-dormant `audio_artifacts` table was
+deliberately left unwired; how T15's sender will locate the produced
+audio file is an explicit open note for T15.
+
+The owner's listening review surfaced and fixed two real Pocket TTS bugs
+beyond the plan's original red tests: a premature-end-of-speech default
+that truncated cloned-voice audio to well under a second (fixed via a
+calibrated `eos_threshold`), and an untruncated >30s voice-conditioning
+prompt in T13's `enroll_voice` that destabilized generation for longer
+sentences specifically (fixed with `truncate=True`, plus a new
+`_trim_leading_silence` helper after a ~2.5s dead-air lead-in in the test
+recording was found eating into that 30s budget) -- this second fix
+touched already-merged T13 code, re-verified against T13's own test
+suite. A real trial of Chatterbox (MIT-licensed, the strongest fully-open
+voice-cloning alternative found by web research; XTTS v2 and F5-TTS's
+original weights both fail the open-license constraint) was run via an
+ephemeral `uv run --with` install -- never added as a project dependency
+-- and was decisively rejected by the owner's own listening comparison,
+confirming Pocket TTS as the right choice rather than leaving it
+unexamined. Ten representative sentences passed both automated checks and
+the owner's final listening acceptance. Full record, including all
+intermediate findings and the four listening rounds, in
+`docs/task-logs/T14.md`.
+
 ## Immediate next step
 
-Begin T14 (Pocket TTS and OGG/Opus pipeline) from the audited T01-T13
-foundation, per `IMPLEMENTATION_PLAN.md`. T14's host prerequisite (install
-FFmpeg and ffprobe) is still unmet and must be resolved before its red
-tests can run for real.
+Merge `task/T14-pocket-tts-opus-pipeline` and begin T15 (Locked WAHA
+sender boundary) per `IMPLEMENTATION_PLAN.md`. T15 requires independent
+security review (plan's review list: T06, T15, T16, T17, T18) and needs
+its own design decision for how it locates the audio file T14's
+`produce_voice_note` writes for a given delivery.
