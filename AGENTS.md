@@ -94,6 +94,26 @@ no mock) -- full mapping of plan red tests to tests, and fresh
 `pytest -m fast`/`-m security`/`mypy`/`ruff`/`repository_policy.py`
 verification evidence, in `docs/task-logs/T12.md`.
 
+T13 (secure voice enrollment) is complete. `voice_enrollment.py` adds
+`validate_sample` (rejects unsupported format/too-short/silent/clipped
+input) and `enroll_voice` (validate -> real Pocket TTS
+`get_state_for_audio_prompt` -> `export_model_state` -> read the export back
+to verify it -> delete the raw sample only after that verification). Pocket
+TTS (`pocket-tts`, `soundfile`) is now actually installed and pinned in
+`pyproject.toml`/`uv.lock` -- confirmed working end-to-end against a real
+consented test recording, including the gated `kyutai/pocket-tts`
+HuggingFace access the owner granted via their own `hf auth login`.
+"Discovery and sender identities cannot read the embedding" is enforced by a
+real AST-based test over `discovery/`, `generation/`, and `judging/`
+(`tests/security/test_voice_enrollment_boundaries.py`) -- scoped to
+currently-existing code only, since the sender doesn't exist until
+T15/T16, which must extend this same check when built. FFmpeg-based input
+transcoding was deliberately kept out of T13's scope (unsupported formats
+like `.m4a` are rejected, not converted) since AGENTS.md ties FFmpeg's
+introduction to T14. Full record, including the three pre-implementation
+blockers resolved (missing test sample, missing Pocket TTS install, gated
+HF access) and fresh verification evidence, in `docs/task-logs/T13.md`.
+
 Confirmed state as of 2026-07-30:
 
 - Canonical implementation checkout: `F:\personal_voice_msg`.
@@ -440,5 +460,7 @@ The project is complete only when:
 
 ## Immediate next step
 
-Begin T13 (secure voice enrollment) from the audited T01-T12 foundation,
-per `IMPLEMENTATION_PLAN.md`.
+Begin T14 (Pocket TTS and OGG/Opus pipeline) from the audited T01-T13
+foundation, per `IMPLEMENTATION_PLAN.md`. T14's host prerequisite (install
+FFmpeg and ffprobe) is still unmet and must be resolved before its red
+tests can run for real.
