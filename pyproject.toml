@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "aiohttp>=3.14.2,<4",
+    "pocket-tts>=2.1.0",
     "rapidfuzz>=3.14.5,<4",
+    "soundfile>=0.14.0",
     "trafilatura>=2.1.0,<3",
     "tzdata>=2025.2",
 ]
@@ -45,6 +47,10 @@ select = ["E", "F", "I", "UP"]
 python_version = "3.12"
 strict = true
 files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["pocket_tts", "soundfile"]
+ignore_missing_imports = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/personal_voice_msg"]
