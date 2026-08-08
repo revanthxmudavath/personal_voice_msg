@@ -90,6 +90,40 @@ docker compose config --quiet
 `live` and `e2e` suites are opt-in and must never target production
 recipients or the real voice/session.
 
+## Context & Session Management
+
+**Context is your most precious resource. Manage it aggressively.**
+
+- Use `/statusline` to track tokens in real-time
+- Between **unrelated tasks**, run `/clear` to reset context entirely
+- During **one task**, if context approaches 50k tokens, run `/compact "Preserve code changes, test status, and safety results"`
+- For **unattended runs**, use `/goal "all tests in -m fast pass && all tests in -m security pass"` and Claude will loop until passing
+- For **independent work** (e.g., T15 review while T16 implements), use `claude --new-worktree task-name` for isolated context
+
+See `/context-management` skill for details.
+
+## Code Exploration (Graph-First)
+
+**Use code-review-graph tools before Grep/Read.** They're 5x cheaper:
+
+- `detect_changes` before reading diffs
+- `get_impact_radius` before grepping imports
+- `query_graph pattern="tests_for"` before hunting test files
+- `get_architecture_overview` for high-level questions
+
+See `/graph-first-exploration` skill for patterns.
+
+## Verification & Task Review
+
+After implementation:
+```
+use task-reviewer subagent to verify this task against the spec
+```
+
+The subagent reviews in a fresh context (no bias toward code just written) and reports gaps affecting correctness only.
+
+See `.claude/agents/task-reviewer.md` for what it checks.
+
 ## Where full detail lives
 
 | Need | File |
@@ -101,3 +135,6 @@ recipients or the real voice/session.
 | Voice/privacy handling | `AGENTS.md` §Voice and privacy rules |
 | Network/container hardening | `AGENTS.md` §Network and container rules |
 | Past task evidence | `docs/task-logs/TXX.md` |
+| Context management tactics | `/context-management` skill |
+| Code exploration patterns | `/graph-first-exploration` skill |
+| Reusable investigation workflow | `/investigate-codebase` skill |

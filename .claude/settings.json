@@ -1,0 +1,24 @@
+{
+  "version": "0.1.0",
+  "hooks": [
+    {
+      "event": "stop",
+      "command": "uv run pytest -m fast --tb=short",
+      "description": "Verify fast tests pass before ending turn"
+    },
+    {
+      "event": "after-write",
+      "command": "uv run ruff check --select=E9,F63,F7,F82 {file}",
+      "description": "Quick syntax check after file write (3-second max)"
+    }
+  ],
+  "context-management": {
+    "compaction-threshold-tokens": 50000,
+    "preserve-on-compaction": [
+      "complete list of modified files",
+      "test status and pass/fail counts",
+      "safety gate verification results",
+      "current task status from IMPLEMENTATION_PLAN.md"
+    ]
+  }
+}
