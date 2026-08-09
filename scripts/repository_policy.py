@@ -214,6 +214,7 @@ def check_secrets(root: Path) -> list[str]:
             or ("waha" in filename and "token" in filename)
             or ("waha" in filename and "session" in filename)
             or ("gemini" in filename and ("key" in filename or "token" in filename))
+            or ("sender" in filename and "key" in filename)
         )
         if sensitive_filename and not documented_example:
             violations.append(

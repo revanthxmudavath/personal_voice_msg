@@ -235,6 +235,8 @@ def test_secret_scan_accepts_non_secret_content(tmp_path: Path) -> None:
         ("owner.voice.embedding", b"\x00\x01private-voice-vector\xff"),
         ("waha-session.bin", b"\x00\x01private-session-state\xff"),
         ("id_ed25519", b"private-key-material"),
+        ("sender-auth-key.txt", b"sender-private-test-key\n"),
+        ("sender_auth_key.txt", b"sender-private-test-key\n"),
     ],
 )
 def test_secret_scan_rejects_sensitive_artifact_filenames(

@@ -22,10 +22,11 @@ real implementations and protocol endpoints, never mocks.
 
 ## Configuration boundary
 
-The non-secret TOML configuration contains only a runtime profile, a secret
-root, and relative secret-file names. Recipient data, WAHA tokens, the voice
-embedding, and WhatsApp session data must be provisioned outside the repository
-as files readable only by the intended service identity. T02 validates the path
+The non-secret TOML configuration contains a runtime profile, a secret root,
+relative secret-file names, and the loopback-only WAHA base URL. Recipient
+data, WAHA tokens, the voice embedding, the WAHA sender auth key, and
+WhatsApp session data must be provisioned outside the repository as files
+readable only by the intended service identity. T02 validates the path
 boundary; T18 enforces deployed ownership and restrictive Unix modes. Secret
 values are never accepted as command-line values.
 
