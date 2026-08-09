@@ -59,7 +59,7 @@ ALL_STATES_SQL = ", ".join(f"'{state.value}'" for state in MessageState)
 DELIVERY_STATES_SQL = ", ".join(
     f"'{state.value}'" for state in DELIVERY_TRANSITIONS
 )
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 OPAQUE_RECIPIENT_KEY = re.compile(r"recipient_[A-Za-z0-9][A-Za-z0-9_-]{2,119}")
 
 
@@ -269,6 +269,22 @@ SCHEMA_V6_STATEMENTS = (
     )
     """,
 )
+# T16's durable audio storage and delivery attempt records (docs/task-logs/T16.md)
+SCHEMA_V7_STATEMENTS = (
+    "ALTER TABLE deliveries ADD COLUMN audio_data BLOB",
+    """
+    CREATE TABLE IF NOT EXISTS delivery_attempts (
+        id INTEGER PRIMARY KEY,
+        delivery_id INTEGER NOT NULL
+            REFERENCES deliveries(id) ON DELETE RESTRICT,
+        attempted_at TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (
+            outcome IN ('sent', 'failed', 'delivery_unknown')
+        ),
+        provider_message_id TEXT
+    )
+    """,
+)
 EXPECTED_SCHEMA_V1_OBJECTS = {
     ("table", "schema_migrations"): SCHEMA_V1_STATEMENTS[0],
     ("table", "sources"): SCHEMA_V1_STATEMENTS[1],
@@ -308,6 +324,13 @@ EXPECTED_SCHEMA_V6_OBJECTS = {
     **EXPECTED_SCHEMA_V5_OBJECTS,
     ("table", "sender_auth_nonces"): SCHEMA_V6_STATEMENTS[0],
 }
+# Build V7 objects by extending V6
+EXPECTED_SCHEMA_V7_OBJECTS = {
+    **EXPECTED_SCHEMA_V6_OBJECTS,
+    ("table", "delivery_attempts"): SCHEMA_V7_STATEMENTS[1],
+}
+# Override deliveries table with post-ALTER schema
+EXPECTED_SCHEMA_V7_OBJECTS[("table", "deliveries")] = "CREATE TABLE deliveries (\n        id INTEGER PRIMARY KEY,\n        message_id INTEGER NOT NULL UNIQUE\n            REFERENCES messages(id) ON DELETE RESTRICT,\n        recipient_key TEXT NOT NULL,\n        pacific_date TEXT NOT NULL,\n        state TEXT NOT NULL CHECK (state IN ('reserved', 'audio_ready', 'sending', 'sent', 'failed', 'delivery_unknown')),\n        provider_message_id TEXT,\n        created_at TEXT NOT NULL,\n        updated_at TEXT NOT NULL, audio_data BLOB,\n        UNIQUE (recipient_key, pacific_date)\n    )"
 
 
 def _timestamp(value: datetime) -> str:
@@ -407,7 +430,8 @@ class Database:
                 {1, 2, 3},
                 {1, 2, 3, 4},
                 {1, 2, 3, 4, 5},
-                {1, 2, 3, 4, 5, CURRENT_SCHEMA_VERSION},
+                {1, 2, 3, 4, 5, 6},
+                {1, 2, 3, 4, 5, 6, CURRENT_SCHEMA_VERSION},
             ):
                 raise MigrationError("database has an unknown migration version")
             connection.execute("PRAGMA journal_mode = WAL")
@@ -421,7 +445,8 @@ class Database:
                 {1, 2, 3},
                 {1, 2, 3, 4},
                 {1, 2, 3, 4, 5},
-                {1, 2, 3, 4, 5, CURRENT_SCHEMA_VERSION},
+                {1, 2, 3, 4, 5, 6},
+                {1, 2, 3, 4, 5, 6, CURRENT_SCHEMA_VERSION},
             ):
                 raise MigrationError("database has an unknown migration version")
             if not versions:
@@ -495,10 +520,20 @@ class Database:
                     connection.execute(statement)
                 connection.execute(
                     "INSERT INTO schema_migrations (version) VALUES (?)",
+                    (6,),
+                )
+                versions = {1, 2, 3, 4, 5, 6}
+
+            _validate_schema(connection, EXPECTED_SCHEMA_V6_OBJECTS)
+            if versions == {1, 2, 3, 4, 5, 6}:
+                for statement in SCHEMA_V7_STATEMENTS:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?)",
                     (CURRENT_SCHEMA_VERSION,),
                 )
 
-            _validate_schema(connection, EXPECTED_SCHEMA_V6_OBJECTS)
+            _validate_schema(connection, EXPECTED_SCHEMA_V7_OBJECTS)
             connection.commit()
         except BaseException:
             connection.rollback()
