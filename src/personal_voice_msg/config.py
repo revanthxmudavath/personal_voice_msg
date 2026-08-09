@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from personal_voice_msg.redaction import Redactor, SensitiveValue
 
@@ -17,10 +18,18 @@ REQUIRED_SETTINGS = {
     "waha_token_file",
     "voice_embedding_file",
     "waha_session_file",
+    "waha_base_url",
+    "sender_auth_key_file",
 }
 RECIPIENT_SETTINGS = {"profile", "phone_number"}
 E164_PHONE = re.compile(r"\+[1-9][0-9]{7,14}")
 MAX_WAHA_TOKEN_CHARACTERS = 4_096
+MAX_SENDER_AUTH_KEY_CHARACTERS = 4_096
+# T15's WAHA deployment binds its port to loopback only (never a public
+# port -- see docs/task-logs/T15.md); real network exposure across hosts is
+# T18's territory, so the sender is only ever configured to reach WAHA on
+# the same machine.
+LOOPBACK_HOSTNAMES = {"127.0.0.1", "localhost"}
 
 
 class ConfigurationError(ValueError):
@@ -40,6 +49,8 @@ class Settings:
     waha_token: SensitiveValue[str]
     voice_embedding: SensitiveValue[Path]
     waha_session: SensitiveValue[Path]
+    waha_base_url: str
+    sender_auth_key: SensitiveValue[str]
 
     def redactor(self) -> Redactor:
         return Redactor(
@@ -48,6 +59,7 @@ class Settings:
                 self.waha_token.reveal(),
                 str(self.voice_embedding.reveal()),
                 str(self.waha_session.reveal()),
+                self.sender_auth_key.reveal(),
             )
         )
 
@@ -162,6 +174,35 @@ def _token(path: Path) -> str:
     return token
 
 
+def _sender_auth_key(path: Path) -> str:
+    try:
+        oversized = path.stat().st_size > MAX_SENDER_AUTH_KEY_CHARACTERS
+    except OSError:
+        raise ConfigurationError("sender auth key file is unreadable") from None
+    if oversized:
+        raise ConfigurationError("sender auth key file is too large")
+    try:
+        key = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        raise ConfigurationError("sender auth key file is unreadable") from None
+    if not key:
+        raise ConfigurationError("sender auth key is empty")
+    return key
+
+
+def _waha_base_url(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"}:
+        raise ConfigurationError("WAHA base URL must use http or https")
+    if parsed.hostname not in LOOPBACK_HOSTNAMES:
+        raise ConfigurationError("WAHA base URL must be a loopback address")
+    if parsed.path not in ("", "/") or parsed.username or parsed.password:
+        raise ConfigurationError("WAHA base URL must not contain extra components")
+    if parsed.query or parsed.fragment:
+        raise ConfigurationError("WAHA base URL must not contain extra components")
+    return value
+
+
 def load_settings(config_path: Path) -> Settings:
     """Load non-secret TOML settings and secret values from bounded files."""
 
@@ -181,6 +222,11 @@ def load_settings(config_path: Path) -> Settings:
         document["waha_session_file"],
         "waha_session_file",
     )
+    sender_auth_key_path = secret_file(
+        root,
+        document["sender_auth_key_file"],
+        "sender_auth_key_file",
+    )
 
     return Settings(
         profile=profile,
@@ -188,4 +234,6 @@ def load_settings(config_path: Path) -> Settings:
         waha_token=SensitiveValue(_token(token_path)),
         voice_embedding=SensitiveValue(embedding_path),
         waha_session=SensitiveValue(session_path),
+        waha_base_url=_waha_base_url(document["waha_base_url"]),
+        sender_auth_key=SensitiveValue(_sender_auth_key(sender_auth_key_path)),
     )

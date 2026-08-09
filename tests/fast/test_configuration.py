@@ -21,6 +21,8 @@ REQUIRED_SETTINGS = {
     "waha_token_file",
     "voice_embedding_file",
     "waha_session_file",
+    "waha_base_url",
+    "sender_auth_key_file",
 }
 
 
@@ -53,6 +55,7 @@ def create_configuration(
     token = "waha-" + "integration-token"
     embedding_data = "consented-test-voice-embedding"
     session_data = "non-production-session-data"
+    sender_auth_key = "sender-auth-" + "integration-key"
 
     (secret_root / "recipient.json").write_text(
         json.dumps(
@@ -66,6 +69,9 @@ def create_configuration(
     (secret_root / "waha-token.txt").write_text(f"{token}\n", encoding="utf-8")
     (secret_root / "voice.embedding").write_bytes(embedding_data.encode())
     (secret_root / "waha-session.bin").write_bytes(session_data.encode())
+    (secret_root / "sender-auth-key.txt").write_text(
+        f"{sender_auth_key}\n", encoding="utf-8"
+    )
 
     values = {
         "profile": profile,
@@ -74,6 +80,8 @@ def create_configuration(
         "waha_token_file": "waha-token.txt",
         "voice_embedding_file": "voice.embedding",
         "waha_session_file": "waha-session.bin",
+        "waha_base_url": "http://127.0.0.1:3000",
+        "sender_auth_key_file": "sender-auth-key.txt",
     }
     config_path = config_root / "settings.toml"
     write_toml(config_path, values)
@@ -87,6 +95,7 @@ def create_configuration(
         "session_path": str((secret_root / "waha-session.bin").resolve()),
         "session_name": "waha-session.bin",
         "session_data": session_data,
+        "sender_auth_key": sender_auth_key,
     }
     return config_path, values, sensitive
 
@@ -281,6 +290,7 @@ def test_secret_file_cannot_escape_secret_root(
         "waha_token_file",
         "voice_embedding_file",
         "waha_session_file",
+        "sender_auth_key_file",
     ],
 )
 def test_configured_secret_file_must_exist(tmp_path: Path, file_setting: str) -> None:
@@ -303,6 +313,7 @@ def test_sensitive_values_use_redacting_wrappers_and_do_not_leak_to_logs(
         settings.waha_token,
         settings.voice_embedding,
         settings.waha_session,
+        settings.sender_auth_key,
     ]
     for protected in protected_values:
         assert not isinstance(protected, (str, Path, bytes))
@@ -339,10 +350,79 @@ def test_deeply_nested_recipient_json_fails_closed(tmp_path: Path) -> None:
 
 
 @pytest.mark.fast
+def test_loads_waha_base_url_and_sender_auth_key_as_typed_values(
+    tmp_path: Path,
+) -> None:
+    config_path, values, sensitive = create_configuration(tmp_path)
+
+    settings = load_settings(config_path)
+
+    assert settings.waha_base_url == values["waha_base_url"]
+    assert settings.sender_auth_key.reveal() == sensitive["sender_auth_key"]
+
+
+@pytest.mark.fast
 def test_oversized_waha_token_file_fails_closed(tmp_path: Path) -> None:
     config_path, values, _ = create_configuration(tmp_path)
     token_path = Path(values["secret_root"]) / values["waha_token_file"]
     token_path.write_text("a" * 10_000_000, encoding="utf-8")
+
+    with pytest.raises(ConfigurationError):
+        load_settings(config_path)
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "ftp://127.0.0.1:3000",
+        "http://example.com:3000",
+        "http://169.254.169.254:3000",
+        "http://127.0.0.1:3000/path",
+        "http://user:pass@127.0.0.1:3000",
+        "http://127.0.0.1:3000?query=1",
+        "not-a-url",
+        "",
+    ],
+)
+def test_non_loopback_waha_base_url_fails_closed(
+    tmp_path: Path, bad_url: str
+) -> None:
+    config_path, values, _ = create_configuration(tmp_path)
+    values["waha_base_url"] = bad_url
+    write_toml(config_path, values)
+
+    with pytest.raises(ConfigurationError):
+        load_settings(config_path)
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("good_url", ["http://127.0.0.1:3000", "http://localhost:3000"])
+def test_loopback_waha_base_url_is_accepted(tmp_path: Path, good_url: str) -> None:
+    config_path, values, _ = create_configuration(tmp_path)
+    values["waha_base_url"] = good_url
+    write_toml(config_path, values)
+
+    settings = load_settings(config_path)
+
+    assert settings.waha_base_url == good_url
+
+
+@pytest.mark.fast
+def test_oversized_sender_auth_key_file_fails_closed(tmp_path: Path) -> None:
+    config_path, values, _ = create_configuration(tmp_path)
+    key_path = Path(values["secret_root"]) / values["sender_auth_key_file"]
+    key_path.write_text("a" * 10_000_000, encoding="utf-8")
+
+    with pytest.raises(ConfigurationError):
+        load_settings(config_path)
+
+
+@pytest.mark.fast
+def test_empty_sender_auth_key_file_fails_closed(tmp_path: Path) -> None:
+    config_path, values, _ = create_configuration(tmp_path)
+    key_path = Path(values["secret_root"]) / values["sender_auth_key_file"]
+    key_path.write_text("   \n", encoding="utf-8")
 
     with pytest.raises(ConfigurationError):
         load_settings(config_path)

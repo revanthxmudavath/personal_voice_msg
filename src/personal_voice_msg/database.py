@@ -59,7 +59,7 @@ ALL_STATES_SQL = ", ".join(f"'{state.value}'" for state in MessageState)
 DELIVERY_STATES_SQL = ", ".join(
     f"'{state.value}'" for state in DELIVERY_TRANSITIONS
 )
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 OPAQUE_RECIPIENT_KEY = re.compile(r"recipient_[A-Za-z0-9][A-Za-z0-9_-]{2,119}")
 
 
@@ -77,6 +77,10 @@ class InvalidTransition(DatabaseError):
 
 class DatabaseInvariantError(DatabaseError):
     """Raised when persisted delivery and message state disagree."""
+
+
+class ReplayDetected(DatabaseError):
+    """Raised when a sender-auth (idempotency_key, timestamp) pair repeats."""
 
 
 class MigrationError(DatabaseError):
@@ -253,6 +257,18 @@ SCHEMA_V5_STATEMENTS = (
     )
     """,
 )
+# T15's sender authentication-layer replay protection (docs/task-logs/T15.md)
+# -- distinct from T16's exactly-once delivery/retry bookkeeping.
+SCHEMA_V6_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS sender_auth_nonces (
+        idempotency_key TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        expires_at TEXT NOT NULL,
+        PRIMARY KEY (idempotency_key, timestamp)
+    )
+    """,
+)
 EXPECTED_SCHEMA_V1_OBJECTS = {
     ("table", "schema_migrations"): SCHEMA_V1_STATEMENTS[0],
     ("table", "sources"): SCHEMA_V1_STATEMENTS[1],
@@ -287,6 +303,10 @@ EXPECTED_SCHEMA_V4_OBJECTS = {
 EXPECTED_SCHEMA_V5_OBJECTS = {
     **EXPECTED_SCHEMA_V4_OBJECTS,
     ("table", "message_rejections"): SCHEMA_V5_STATEMENTS[0],
+}
+EXPECTED_SCHEMA_V6_OBJECTS = {
+    **EXPECTED_SCHEMA_V5_OBJECTS,
+    ("table", "sender_auth_nonces"): SCHEMA_V6_STATEMENTS[0],
 }
 
 
@@ -386,7 +406,8 @@ class Database:
                 {1, 2},
                 {1, 2, 3},
                 {1, 2, 3, 4},
-                {1, 2, 3, 4, CURRENT_SCHEMA_VERSION},
+                {1, 2, 3, 4, 5},
+                {1, 2, 3, 4, 5, CURRENT_SCHEMA_VERSION},
             ):
                 raise MigrationError("database has an unknown migration version")
             connection.execute("PRAGMA journal_mode = WAL")
@@ -399,7 +420,8 @@ class Database:
                 {1, 2},
                 {1, 2, 3},
                 {1, 2, 3, 4},
-                {1, 2, 3, 4, CURRENT_SCHEMA_VERSION},
+                {1, 2, 3, 4, 5},
+                {1, 2, 3, 4, 5, CURRENT_SCHEMA_VERSION},
             ):
                 raise MigrationError("database has an unknown migration version")
             if not versions:
@@ -463,10 +485,20 @@ class Database:
                     connection.execute(statement)
                 connection.execute(
                     "INSERT INTO schema_migrations (version) VALUES (?)",
+                    (5,),
+                )
+                versions = {1, 2, 3, 4, 5}
+
+            _validate_schema(connection, EXPECTED_SCHEMA_V5_OBJECTS)
+            if versions == {1, 2, 3, 4, 5}:
+                for statement in SCHEMA_V6_STATEMENTS:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?)",
                     (CURRENT_SCHEMA_VERSION,),
                 )
 
-            _validate_schema(connection, EXPECTED_SCHEMA_V5_OBJECTS)
+            _validate_schema(connection, EXPECTED_SCHEMA_V6_OBJECTS)
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -964,3 +996,35 @@ class Database:
         if row is None:
             raise DatabaseInvariantError("delivery count query returned no row")
         return int(row[0])
+
+    def record_sender_nonce(
+        self,
+        idempotency_key: str,
+        timestamp: int,
+        expires_at: datetime,
+    ) -> None:
+        """Record a sender-auth (idempotency_key, timestamp) pair.
+
+        Authentication-layer replay protection for T15's sender boundary
+        (docs/task-logs/T15.md) -- distinct from T16's exactly-once
+        delivery/retry bookkeeping. Raises ``ReplayDetected`` if the exact
+        pair was already recorded.
+        """
+
+        with self._transaction() as connection:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO sender_auth_nonces (
+                        idempotency_key,
+                        timestamp,
+                        expires_at
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    (idempotency_key, timestamp, _timestamp(expires_at)),
+                )
+            except sqlite3.IntegrityError:
+                raise ReplayDetected(
+                    "sender-auth request was already recorded"
+                ) from None

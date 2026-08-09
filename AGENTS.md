@@ -501,10 +501,52 @@ the owner's final listening acceptance. Full record, including all
 intermediate findings and the four listening rounds, in
 `docs/task-logs/T14.md`.
 
+T15 (locked WAHA sender boundary) is complete on
+`task/T15-locked-waha-sender`. The open design question T14 left --
+how the sender locates a delivery's audio file -- resolved to neither of
+the two options the plan brief offered: the plan's own implementation
+line says the sender "accepts validated audio bytes," so it never needs a
+DB-driven lookup at all; the caller (T16's future orchestrator) calls
+T14's `produce_voice_note` first and passes the resulting bytes straight
+through. `audio_artifacts` remains deliberately unwired.
+
+New module `src/personal_voice_msg/sender.py`: `send_voice_note(session,
+database, settings, audio_bytes, idempotency_key, timestamp, signature,
+now) -> str` has no recipient-shaped parameter anywhere in its signature
+-- the destination is always `settings.recipient`, read server-side.
+Checks run in order, all fail-closed, all before any WAHA call: HMAC-SHA256
+signature (`hmac.compare_digest`, constant-time), timestamp freshness
+(300s window), replay protection (new `SCHEMA_V6` `sender_auth_nonces`
+table, atomic `BEGIN IMMEDIATE` insert -- authentication-layer only,
+distinct from T16's future exactly-once delivery bookkeeping), then real
+audio validation (reuses T14's `audio_pipeline.validate_audio`). Only
+then a real `POST /api/sendVoice` to WAHA. `config.py` gained two new
+`Settings` fields (`waha_base_url`, loopback-only validated;
+`sender_auth_key`, a new secret). T13's AST-based boundary test
+(`test_voice_enrollment_boundaries.py`) was extended, exactly as that
+task's own entry above said T15 would need to, so `discovery/`,
+`generation/`, and `judging/` still cannot reach the sender or WAHA
+secrets. New `docker-compose.yml` runs WAHA Core (MIT-licensed NOWEB
+engine, pinned to a real dated tag *and* its resolved digest, not
+`latest`) bound to `127.0.0.1:3000` only -- never a public port -- with
+its own API key, dashboard, and Swagger auth. The done-when gate ("a real
+voice note reaches only the owner's staging chat") was proven twice
+against a real, owner-paired WAHA session, independently confirmed
+received by the owner in chat both times. A fresh, unbiased subagent
+performed the mandatory independent security review (T15 is on the
+review-required list) and reported zero high-confidence findings after
+tracing the actual signature/replay/SSRF-validation logic against source,
+not the task log's prose. Full record, including a real gap this task's
+own tooling caught in its own local setup (dev secrets briefly sitting in
+a git-ignored-but-still-in-repo directory, correctly flagged by
+`repository_policy.py`'s scanner, which deliberately does not trust
+`.gitignore`), in `docs/task-logs/T15.md`.
+
 ## Immediate next step
 
-Merge `task/T14-pocket-tts-opus-pipeline` and begin T15 (Locked WAHA
-sender boundary) per `IMPLEMENTATION_PLAN.md`. T15 requires independent
-security review (plan's review list: T06, T15, T16, T17, T18) and needs
-its own design decision for how it locates the audio file T14's
-`produce_voice_note` writes for a given delivery.
+Merge `task/T15-locked-waha-sender` and begin T16 (Exactly-once delivery
+and ambiguity recovery) per `IMPLEMENTATION_PLAN.md`. T16 requires
+independent security review (plan's review list: T06, T15, T16, T17,
+T18). T16 is what actually persists WAHA message identifiers and attempt
+records for exactly-once delivery -- T15's `sender_auth_nonces` table is
+authentication-layer replay protection only and does not cover that.
