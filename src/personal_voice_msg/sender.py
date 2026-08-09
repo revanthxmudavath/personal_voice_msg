@@ -90,8 +90,8 @@ async def send_voice_note(
 
     with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as handle:
         temp_path = Path(handle.name)
-        handle.write(audio_bytes)
     try:
+        temp_path.write_bytes(audio_bytes)
         validate_audio(temp_path)
     except AudioPipelineError as error:
         raise SenderError(f"audio failed validation: {error}") from error
