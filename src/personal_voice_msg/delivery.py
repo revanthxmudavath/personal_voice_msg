@@ -9,6 +9,12 @@ import aiohttp
 from personal_voice_msg.audio_pipeline import produce_voice_note
 from personal_voice_msg.config import Settings
 from personal_voice_msg.database import Database, MessageState
+from personal_voice_msg.scheduling import (
+    ScheduleKind,
+    TriggerStatus,
+    classify_trigger,
+    planned_triggers_for_date,
+)
 from personal_voice_msg.sender import (
     SenderAmbiguous,
     SenderRejected,
@@ -32,6 +38,16 @@ async def run_daily_send(
     currently sits, and return its resulting state. Callers loop this
     within the send window -- see Task 11.
     """
+    send_trigger = next(
+        trigger
+        for trigger in planned_triggers_for_date(pacific_date)
+        if trigger.kind is ScheduleKind.DAILY_SEND
+    )
+    if classify_trigger(send_trigger, now) is not TriggerStatus.DUE:
+        raise ValueError(
+            "run_daily_send can only run inside the daily send window"
+        )
+
     reservation = database.reserve_next_message(recipient_key, pacific_date, now)
     if reservation is not None:
         delivery_id = reservation.delivery_id
