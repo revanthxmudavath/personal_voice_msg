@@ -12,6 +12,7 @@ from personal_voice_msg.database import Database, MessageState
 from personal_voice_msg.sender import (
     SenderAmbiguous,
     SenderRejected,
+    reconcile_delivery,
     send_voice_note,
     sign_request,
 )
@@ -41,6 +42,33 @@ async def run_daily_send(
             return MessageState.QUEUED  # nothing reserved, nothing queued
         delivery_id = existing_id
         state = database.get_delivery_state(delivery_id)
+
+    if state is MessageState.SENDING:
+        # This process did not just set SENDING itself in this call --
+        # a prior attempt (possibly a crashed process) may or may not
+        # have reached WAHA. Reclassify as ambiguous rather than guessing.
+        database.record_delivery_attempt(
+            delivery_id, MessageState.DELIVERY_UNKNOWN, now
+        )
+        return MessageState.DELIVERY_UNKNOWN
+
+    if state is MessageState.FAILED:
+        database.transition_delivery(delivery_id, MessageState.AUDIO_READY, now)
+        state = MessageState.AUDIO_READY
+
+    if state is MessageState.DELIVERY_UNKNOWN:
+        latest_attempt_at = database.get_latest_attempt_time(delivery_id)
+        outcome, provider_message_id = await reconcile_delivery(
+            session, settings, latest_attempt_at, now
+        )
+        if outcome is MessageState.DELIVERY_UNKNOWN:
+            return MessageState.DELIVERY_UNKNOWN  # still inconclusive
+        database.record_delivery_attempt(
+            delivery_id, outcome, now, provider_message_id=provider_message_id
+        )
+        if outcome is MessageState.SENT:
+            return MessageState.SENT
+        state = MessageState.AUDIO_READY
 
     if state is MessageState.RESERVED:
         temp_destination = Path(tempfile.gettempdir()) / f"t16-{delivery_id}.ogg"

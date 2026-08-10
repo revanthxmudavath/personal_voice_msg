@@ -1243,6 +1243,28 @@ class Database:
             raise RecordNotFound("delivery does not exist")
         return MessageState(row[0])
 
+    def get_latest_attempt_time(self, delivery_id: int) -> datetime:
+        """Return the ``attempted_at`` of the most recent recorded attempt.
+
+        Used by the ``DELIVERY_UNKNOWN`` reconciliation path (T16) as the
+        start of the window to search WAHA's chat history for a matching
+        send. Raises ``ValueError`` if no attempt row exists for this
+        delivery -- a ``DELIVERY_UNKNOWN`` delivery always has at least one,
+        since ``record_delivery_attempt`` is what puts it there.
+        """
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT attempted_at FROM delivery_attempts "
+                "WHERE delivery_id = ? ORDER BY id DESC LIMIT 1",
+                (delivery_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise ValueError("no attempt recorded for a delivery_unknown delivery")
+        return datetime.fromisoformat(str(row[0]))
+
     def get_message_text(self, message_id: int) -> str:
         connection = self._connect()
         try:
