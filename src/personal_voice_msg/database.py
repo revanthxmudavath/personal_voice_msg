@@ -330,15 +330,16 @@ EXPECTED_SCHEMA_V7_OBJECTS = {
     ("table", "delivery_attempts"): SCHEMA_V7_STATEMENTS[1],
 }
 # Override deliveries table with post-ALTER schema
-_v7_deliveries_sql = (
+# Literal schema text from real migration run (noqa: E501 for captured text)
+_v7_deliveries_sql = (  # noqa: E501
     "CREATE TABLE deliveries (\n"
     "        id INTEGER PRIMARY KEY,\n"
     "        message_id INTEGER NOT NULL UNIQUE\n"
     "            REFERENCES messages(id) ON DELETE RESTRICT,\n"
     "        recipient_key TEXT NOT NULL,\n"
     "        pacific_date TEXT NOT NULL,\n"
-    "        state TEXT NOT NULL CHECK (state IN ('reserved', 'audio_ready',\n"
-    "            'sending', 'sent', 'failed', 'delivery_unknown')),\n"
+    "        state TEXT NOT NULL CHECK (state IN ('reserved', 'audio_ready', "
+    "'sending', 'sent', 'failed', 'delivery_unknown')),\n"
     "        provider_message_id TEXT,\n"
     "        created_at TEXT NOT NULL,\n"
     "        updated_at TEXT NOT NULL, audio_data BLOB,\n"
@@ -487,7 +488,10 @@ class Database:
                 )
                 versions = {1}
 
-            _validate_schema(connection, _stage_schema_objects(EXPECTED_SCHEMA_V1_OBJECTS, v7_reached))  # noqa: E501
+            staged_objects_v1 = _stage_schema_objects(
+                EXPECTED_SCHEMA_V1_OBJECTS, v7_reached
+            )
+            _validate_schema(connection, staged_objects_v1)
             if versions == {1}:
                 for statement in SCHEMA_V2_STATEMENTS:
                     connection.execute(statement)
@@ -509,7 +513,10 @@ class Database:
                 )
                 versions = {1, 2}
 
-            _validate_schema(connection, _stage_schema_objects(EXPECTED_SCHEMA_V2_OBJECTS, v7_reached))  # noqa: E501
+            staged_objects_v2 = _stage_schema_objects(
+                EXPECTED_SCHEMA_V2_OBJECTS, v7_reached
+            )
+            _validate_schema(connection, staged_objects_v2)
             if versions == {1, 2}:
                 try:
                     for statement in SCHEMA_V3_STATEMENTS:
@@ -524,7 +531,10 @@ class Database:
                 )
                 versions = {1, 2, 3}
 
-            _validate_schema(connection, _stage_schema_objects(EXPECTED_SCHEMA_V3_OBJECTS, v7_reached))  # noqa: E501
+            staged_objects_v3 = _stage_schema_objects(
+                EXPECTED_SCHEMA_V3_OBJECTS, v7_reached
+            )
+            _validate_schema(connection, staged_objects_v3)
             if versions == {1, 2, 3}:
                 for statement in SCHEMA_V4_STATEMENTS:
                     connection.execute(statement)
@@ -534,7 +544,10 @@ class Database:
                 )
                 versions = {1, 2, 3, 4}
 
-            _validate_schema(connection, _stage_schema_objects(EXPECTED_SCHEMA_V4_OBJECTS, v7_reached))  # noqa: E501
+            staged_objects_v4 = _stage_schema_objects(
+                EXPECTED_SCHEMA_V4_OBJECTS, v7_reached
+            )
+            _validate_schema(connection, staged_objects_v4)
             if versions == {1, 2, 3, 4}:
                 for statement in SCHEMA_V5_STATEMENTS:
                     connection.execute(statement)
@@ -544,7 +557,10 @@ class Database:
                 )
                 versions = {1, 2, 3, 4, 5}
 
-            _validate_schema(connection, _stage_schema_objects(EXPECTED_SCHEMA_V5_OBJECTS, v7_reached))  # noqa: E501
+            staged_objects_v5 = _stage_schema_objects(
+                EXPECTED_SCHEMA_V5_OBJECTS, v7_reached
+            )
+            _validate_schema(connection, staged_objects_v5)
             if versions == {1, 2, 3, 4, 5}:
                 for statement in SCHEMA_V6_STATEMENTS:
                     connection.execute(statement)
@@ -554,7 +570,10 @@ class Database:
                 )
                 versions = {1, 2, 3, 4, 5, 6}
 
-            _validate_schema(connection, _stage_schema_objects(EXPECTED_SCHEMA_V6_OBJECTS, v7_reached))  # noqa: E501
+            staged_objects_v6 = _stage_schema_objects(
+                EXPECTED_SCHEMA_V6_OBJECTS, v7_reached
+            )
+            _validate_schema(connection, staged_objects_v6)
             if versions == {1, 2, 3, 4, 5, 6}:
                 for statement in SCHEMA_V7_STATEMENTS:
                     connection.execute(statement)

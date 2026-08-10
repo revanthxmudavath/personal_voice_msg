@@ -51,28 +51,34 @@ def read_table_names(path: Path) -> set[str]:
     return {str(row[0]) for row in rows}
 
 
+def _strip_audio_data_column(
+    connection: sqlite3.Connection, temp_table: str
+) -> None:
+    """Helper to remove audio_data column from deliveries table by recreation."""
+    connection.execute(f"ALTER TABLE deliveries RENAME TO {temp_table}")
+    connection.execute(_DELIVERIES_WITHOUT_AUDIO_DATA_SQL)
+    connection.execute(
+        f"""
+        INSERT INTO deliveries
+        SELECT id, message_id, recipient_key, pacific_date, state,
+               provider_message_id, created_at, updated_at
+        FROM {temp_table}
+        """
+    )
+    connection.execute(f"DROP TABLE {temp_table}")
+    connection.execute(
+        "CREATE INDEX deliveries_recipient_date_idx "
+        "ON deliveries(recipient_key, pacific_date)"
+    )
+
+
 def downgrade_current_database_to_v2(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE IF EXISTS sender_auth_nonces")
         connection.execute("DROP TABLE IF EXISTS message_rejections")
         connection.execute("DROP TABLE IF EXISTS daily_runs")
         connection.execute("DROP TABLE IF EXISTS delivery_attempts")
-        # Remove audio_data column from deliveries (recreate table without it)
-        connection.execute("ALTER TABLE deliveries RENAME TO deliveries_v7")
-        connection.execute(_DELIVERIES_WITHOUT_AUDIO_DATA_SQL)
-        connection.execute(
-            """
-            INSERT INTO deliveries
-            SELECT id, message_id, recipient_key, pacific_date, state,
-                   provider_message_id, created_at, updated_at
-            FROM deliveries_v7
-            """
-        )
-        connection.execute("DROP TABLE deliveries_v7")
-        connection.execute(
-            "CREATE INDEX deliveries_recipient_date_idx "
-            "ON deliveries(recipient_key, pacific_date)"
-        )
+        _strip_audio_data_column(connection, "deliveries_v7")
         connection.execute(
             "DROP INDEX IF EXISTS message_history_normalized_hash_unique_idx"
         )
@@ -87,22 +93,7 @@ def downgrade_current_database_to_v3(path: Path) -> None:
         connection.execute("DROP TABLE IF EXISTS message_rejections")
         connection.execute("DROP TABLE IF EXISTS daily_runs")
         connection.execute("DROP TABLE IF EXISTS delivery_attempts")
-        # Remove audio_data column from deliveries (recreate table without it)
-        connection.execute("ALTER TABLE deliveries RENAME TO deliveries_v7")
-        connection.execute(_DELIVERIES_WITHOUT_AUDIO_DATA_SQL)
-        connection.execute(
-            """
-            INSERT INTO deliveries
-            SELECT id, message_id, recipient_key, pacific_date, state,
-                   provider_message_id, created_at, updated_at
-            FROM deliveries_v7
-            """
-        )
-        connection.execute("DROP TABLE deliveries_v7")
-        connection.execute(
-            "CREATE INDEX deliveries_recipient_date_idx "
-            "ON deliveries(recipient_key, pacific_date)"
-        )
+        _strip_audio_data_column(connection, "deliveries_v7")
         connection.execute(
             "DELETE FROM schema_migrations WHERE version IN (4, 5, 6, 7)"
         )
@@ -113,22 +104,7 @@ def downgrade_current_database_to_v4(path: Path) -> None:
         connection.execute("DROP TABLE IF EXISTS sender_auth_nonces")
         connection.execute("DROP TABLE IF EXISTS message_rejections")
         connection.execute("DROP TABLE IF EXISTS delivery_attempts")
-        # Remove audio_data column from deliveries (recreate table without it)
-        connection.execute("ALTER TABLE deliveries RENAME TO deliveries_v7")
-        connection.execute(_DELIVERIES_WITHOUT_AUDIO_DATA_SQL)
-        connection.execute(
-            """
-            INSERT INTO deliveries
-            SELECT id, message_id, recipient_key, pacific_date, state,
-                   provider_message_id, created_at, updated_at
-            FROM deliveries_v7
-            """
-        )
-        connection.execute("DROP TABLE deliveries_v7")
-        connection.execute(
-            "CREATE INDEX deliveries_recipient_date_idx "
-            "ON deliveries(recipient_key, pacific_date)"
-        )
+        _strip_audio_data_column(connection, "deliveries_v7")
         connection.execute("DELETE FROM schema_migrations WHERE version IN (5, 6, 7)")
 
 
@@ -136,45 +112,14 @@ def downgrade_current_database_to_v5(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE IF EXISTS sender_auth_nonces")
         connection.execute("DROP TABLE IF EXISTS delivery_attempts")
-        # Remove audio_data column from deliveries (recreate table without it)
-        connection.execute("ALTER TABLE deliveries RENAME TO deliveries_v7")
-        connection.execute(_DELIVERIES_WITHOUT_AUDIO_DATA_SQL)
-        connection.execute(
-            """
-            INSERT INTO deliveries
-            SELECT id, message_id, recipient_key, pacific_date, state,
-                   provider_message_id, created_at, updated_at
-            FROM deliveries_v7
-            """
-        )
-        connection.execute("DROP TABLE deliveries_v7")
-        connection.execute(
-            "CREATE INDEX deliveries_recipient_date_idx "
-            "ON deliveries(recipient_key, pacific_date)"
-        )
+        _strip_audio_data_column(connection, "deliveries_v7")
         connection.execute("DELETE FROM schema_migrations WHERE version IN (6, 7)")
 
 
 def downgrade_current_database_to_v6(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE IF EXISTS delivery_attempts")
-        # SQLite has no DROP COLUMN before 3.35; recreate deliveries as it
-        # was at v6 (no audio_data) to simulate a real pre-v7 database.
-        connection.execute("ALTER TABLE deliveries RENAME TO deliveries_v6")
-        connection.execute(_DELIVERIES_WITHOUT_AUDIO_DATA_SQL)
-        connection.execute(
-            """
-            INSERT INTO deliveries
-            SELECT id, message_id, recipient_key, pacific_date, state,
-                   provider_message_id, created_at, updated_at
-            FROM deliveries_v6
-            """
-        )
-        connection.execute("DROP TABLE deliveries_v6")
-        connection.execute(
-            "CREATE INDEX deliveries_recipient_date_idx "
-            "ON deliveries(recipient_key, pacific_date)"
-        )
+        _strip_audio_data_column(connection, "deliveries_v6")
         connection.execute("DELETE FROM schema_migrations WHERE version = 7")
 
 
