@@ -86,11 +86,34 @@ def signed_request(
 
 
 # Outer bound a caller-side reconciliation retry loop uses in this test.
-# Deliberately well under RECONCILE_GRACE_SECONDS (45s) so a real bug that
-# makes reconcile_delivery never find the message fails loudly as
-# DELIVERY_UNKNOWN (assertion failure) rather than quietly "passing" by
-# accidentally crossing into the AUDIO_READY grace-period branch instead.
-_CALLER_RETRY_BUDGET_SECONDS = 30.0
+#
+# Widened from an initial 30.0 to 40.0 based on real measured data, not a
+# guess: 5 consecutive individual real runs of this test (timed with
+# `--durations=0`, isolating the "call" phase from fixture setup) against
+# the real live session showed a heavy-tailed indexing-lag distribution --
+# 3/5 resolved in ~1.5-2.0s, but 2/5 did not resolve within the old 30s
+# budget at all (measured "call" durations of 31.62s and 33.01s with the
+# outcome still DELIVERY_UNKNOWN at that point). A direct chat-history
+# check afterward confirmed both of those messages *did* eventually get
+# indexed by WAHA -- this is lag, not data loss -- but this task's own
+# tooling could not pin down exactly how much beyond ~33s each one took,
+# since the test itself stopped polling at the budget. 40.0 gives ~7-9s of
+# real empirical margin over the two measured failures while staying
+# meaningfully under RECONCILE_GRACE_SECONDS (45s, sender.py) so a genuine
+# regression in reconcile_delivery still fails loudly (either as this
+# test's own DELIVERY_UNKNOWN timeout, or as an AUDIO_READY mismatch if
+# reconcile_delivery's own internal grace-period clock independently
+# elapses first) rather than silently "passing" by accident.
+#
+# This widening reduces observed test flakiness but does NOT eliminate the
+# underlying uncertainty: the true tail of WAHA's indexing-lag distribution
+# is not fully characterized by this task's sample size, and there is a
+# real, currently undocumented-elsewhere risk that RECONCILE_GRACE_SECONDS
+# itself (45s, a production constant, not touched by this change) could be
+# too tight under real-world lag spikes -- see docs/task-logs/T16.md's
+# "Task 7 fix" section for the full data and why this was flagged rather
+# than silently resolved by changing that production constant.
+_CALLER_RETRY_BUDGET_SECONDS = 40.0
 _CALLER_RETRY_INTERVAL_SECONDS = 2.0
 
 
