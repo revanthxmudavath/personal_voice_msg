@@ -32,17 +32,15 @@ async def run_daily_send(
     within the send window -- see Task 11.
     """
     reservation = database.reserve_next_message(recipient_key, pacific_date, now)
-    if reservation is None:
-        existing_state = _find_existing_delivery_state(
-            database, recipient_key, pacific_date
-        )
-        if existing_state is None:
-            return MessageState.QUEUED  # nothing reserved, nothing queued
-        delivery_id = _find_existing_delivery_id(database, recipient_key, pacific_date)
-        state = existing_state
-    else:
+    if reservation is not None:
         delivery_id = reservation.delivery_id
         state = reservation.state
+    else:
+        existing_id = database.get_delivery_for_date(recipient_key, pacific_date)
+        if existing_id is None:
+            return MessageState.QUEUED  # nothing reserved, nothing queued
+        delivery_id = existing_id
+        state = database.get_delivery_state(delivery_id)
 
     if state is MessageState.RESERVED:
         temp_destination = Path(tempfile.gettempdir()) / f"t16-{delivery_id}.ogg"
@@ -80,15 +78,3 @@ async def run_daily_send(
             return MessageState.SENT
 
     return state
-
-
-def _find_existing_delivery_id(
-    database: Database, recipient_key: str, pacific_date: date
-) -> int:
-    raise NotImplementedError  # filled in by Task 9 -- see its Step 3
-
-
-def _find_existing_delivery_state(
-    database: Database, recipient_key: str, pacific_date: date
-) -> MessageState | None:
-    raise NotImplementedError  # filled in by Task 9 -- see its Step 3

@@ -142,3 +142,21 @@ def test_clear_audio_data_refuses_before_sent(tmp_path: Path) -> None:
         database.clear_audio_data(delivery_id, NOW)
 
     assert database.get_audio_data(delivery_id) == b"note-bytes"
+
+
+@pytest.mark.fast
+def test_get_delivery_for_date_returns_none_when_nothing_reserved(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "state.sqlite3")
+    database.migrate()
+
+    assert database.get_delivery_for_date(RECIPIENT, date(2026, 8, 9)) is None
+
+
+@pytest.mark.fast
+def test_get_delivery_for_date_finds_an_existing_reservation(tmp_path: Path) -> None:
+    database = Database(tmp_path / "state.sqlite3")
+    delivery_id = reserved_and_audio_ready(database, "A warm original sentence.")
+
+    assert database.get_delivery_for_date(RECIPIENT, date(2026, 8, 9)) == delivery_id

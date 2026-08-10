@@ -1214,6 +1214,22 @@ class Database:
             raise RecordNotFound("message does not exist")
         return MessageState(row[0])
 
+    def get_delivery_for_date(
+        self, recipient_key: str, pacific_date: date
+    ) -> int | None:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT id FROM deliveries
+                WHERE recipient_key = ? AND pacific_date = ?
+                """,
+                (recipient_key, pacific_date.isoformat()),
+            ).fetchone()
+        finally:
+            connection.close()
+        return None if row is None else int(row[0])
+
     def get_delivery_state(self, delivery_id: int) -> MessageState:
         connection = self._connect()
         try:
