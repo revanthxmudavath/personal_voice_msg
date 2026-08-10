@@ -181,6 +181,66 @@ class _ReconcileQueryFailed(Exception):
     reconcile_delivery -- it always maps to DELIVERY_UNKNOWN."""
 
 
+def _find_matching_provider_id(
+    messages: object, window_start_timestamp: float
+) -> str | None:
+    """Scan an already-parsed WAHA chat-history JSON payload for an
+    outgoing voice message at or after ``window_start_timestamp``.
+
+    Pure and synchronous on purpose -- no network I/O -- so this can be
+    unit-tested directly with real Python data structures (not a mock of
+    anything) instead of needing a real WAHA call to exercise malformed
+    response shapes. Raises ``_ReconcileQueryFailed`` if ``messages``
+    itself is not a list, or if a message that has already matched
+    ``fromMe``/``hasMedia``/audio-``mimetype`` (i.e. WAHA is clearly
+    telling us this specific message *is* an outgoing voice note) turns
+    out to have a malformed ``timestamp`` or ``_data.key.id``.
+
+    That escalation matters: once a message has passed those substantive
+    filters, a malformed shape on it is not "not a match" -- it's "WAHA
+    answered but we can't trust what it said about the one message that
+    matters." Silently treating it as a non-match (the previous
+    behavior) would let a malformed shape on every candidate message look
+    identical to "genuinely nothing sent," which can resolve all the way
+    to ``AUDIO_READY`` once ``RECONCILE_GRACE_SECONDS`` elapses -- a
+    duplicate-send outcome, which is exactly what this fail-closed
+    ``_ReconcileQueryFailed`` escalation exists to prevent (the same path
+    a query-level failure already takes). A message that never matched
+    ``fromMe``/``hasMedia``/``mimetype`` in the first place is genuinely
+    not a candidate and still just continues to the next message.
+    """
+
+    if not isinstance(messages, list):
+        raise _ReconcileQueryFailed("WAHA chat-history response was malformed")
+
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if message.get("fromMe") is not True:
+            continue
+        if message.get("hasMedia") is not True:
+            continue
+        media = message.get("media")
+        mimetype = media.get("mimetype") if isinstance(media, dict) else None
+        if not isinstance(mimetype, str) or not mimetype.startswith("audio/"):
+            continue
+        timestamp = message.get("timestamp")
+        if not isinstance(timestamp, int | float):
+            raise _ReconcileQueryFailed(
+                "WAHA chat-history message is missing a valid timestamp"
+            )
+        if timestamp < window_start_timestamp:
+            continue
+        try:
+            return str(message["_data"]["key"]["id"])
+        except (KeyError, TypeError):
+            raise _ReconcileQueryFailed(
+                "WAHA chat-history message is missing a valid id"
+            ) from None
+
+    return None
+
+
 async def _fetch_matching_provider_id(
     session: aiohttp.ClientSession,
     settings: Settings,
@@ -190,7 +250,8 @@ async def _fetch_matching_provider_id(
     """One real GET against WAHA's chat history. Returns the matching
     outgoing voice message's provider_message_id (``_data.key.id``), or
     ``None`` if the query succeeded but nothing matched. Raises
-    ``_ReconcileQueryFailed`` if the query itself failed.
+    ``_ReconcileQueryFailed`` if the query itself failed or the response
+    was malformed -- see ``_find_matching_provider_id``.
     """
 
     try:
@@ -217,29 +278,7 @@ async def _fetch_matching_provider_id(
     except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as error:
         raise _ReconcileQueryFailed("WAHA chat-history request failed") from error
 
-    if not isinstance(messages, list):
-        raise _ReconcileQueryFailed("WAHA chat-history response was malformed")
-
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        if message.get("fromMe") is not True:
-            continue
-        if message.get("hasMedia") is not True:
-            continue
-        media = message.get("media")
-        mimetype = media.get("mimetype") if isinstance(media, dict) else None
-        if not isinstance(mimetype, str) or not mimetype.startswith("audio/"):
-            continue
-        timestamp = message.get("timestamp")
-        if not isinstance(timestamp, int | float):
-            continue
-        if timestamp < window_start_timestamp:
-            continue
-        try:
-            return str(message["_data"]["key"]["id"])
-        except (KeyError, TypeError):
-            continue
+    return _find_matching_provider_id(messages, window_start_timestamp)
 
     return None
 
