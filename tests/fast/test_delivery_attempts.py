@@ -116,3 +116,29 @@ def test_record_delivery_attempt_raises_for_a_missing_delivery(
 
     with pytest.raises(RecordNotFound):
         database.record_delivery_attempt(999, MessageState.SENT, NOW)
+
+
+@pytest.mark.fast
+def test_clear_audio_data_nulls_the_column_once_sent(tmp_path: Path) -> None:
+    database = Database(tmp_path / "state.sqlite3")
+    delivery_id = reserved_and_audio_ready(database, "A warm original sentence.")
+    database.record_delivery_attempt(delivery_id, MessageState.SENT, NOW)
+
+    database.clear_audio_data(delivery_id, NOW)
+
+    with sqlite3.connect(database.path) as connection:
+        audio_data = connection.execute(
+            "SELECT audio_data FROM deliveries WHERE id = ?", (delivery_id,)
+        ).fetchone()
+    assert audio_data == (None,)
+
+
+@pytest.mark.fast
+def test_clear_audio_data_refuses_before_sent(tmp_path: Path) -> None:
+    database = Database(tmp_path / "state.sqlite3")
+    delivery_id = reserved_and_audio_ready(database, "A warm original sentence.")
+
+    with pytest.raises(InvalidTransition):
+        database.clear_audio_data(delivery_id, NOW)
+
+    assert database.get_audio_data(delivery_id) == b"note-bytes"

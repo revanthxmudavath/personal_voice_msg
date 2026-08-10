@@ -1165,6 +1165,27 @@ class Database:
             if delivery_update.rowcount != 1 or message_update.rowcount != 1:
                 raise DatabaseInvariantError("delivery state changed concurrently")
 
+    def clear_audio_data(self, delivery_id: int, now: datetime) -> None:
+        """Null out a delivery's stored audio once it is confirmed SENT."""
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT state FROM deliveries WHERE id = ?", (delivery_id,)
+            ).fetchone()
+            if row is None:
+                raise RecordNotFound("delivery does not exist")
+            if MessageState(row[0]) is not MessageState.SENT:
+                raise InvalidTransition(
+                    "audio can only be cleared once the delivery is sent"
+                )
+            updated = connection.execute(
+                "UPDATE deliveries SET audio_data = NULL, updated_at = ? "
+                "WHERE id = ? AND state = ?",
+                (timestamp, delivery_id, MessageState.SENT.value),
+            )
+            if updated.rowcount != 1:
+                raise DatabaseInvariantError("delivery state changed concurrently")
+
     def get_audio_data(self, delivery_id: int) -> bytes:
         connection = self._connect()
         try:
