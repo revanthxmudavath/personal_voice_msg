@@ -52,8 +52,11 @@ DELIVERY_TRANSITIONS = {
         MessageState.DELIVERY_UNKNOWN,
     },
     MessageState.SENT: set(),
-    MessageState.FAILED: set(),
-    MessageState.DELIVERY_UNKNOWN: set(),
+    MessageState.FAILED: {MessageState.AUDIO_READY},
+    MessageState.DELIVERY_UNKNOWN: {
+        MessageState.AUDIO_READY,
+        MessageState.SENT,
+    },
 }
 ALL_STATES_SQL = ", ".join(f"'{state.value}'" for state in MessageState)
 DELIVERY_STATES_SQL = ", ".join(
@@ -1025,6 +1028,70 @@ class Database:
             )
             if delivery_update.rowcount != 1 or message_update.rowcount != 1:
                 raise DatabaseInvariantError("delivery state changed concurrently")
+
+    def mark_audio_ready(
+        self, delivery_id: int, audio_bytes: bytes, now: datetime
+    ) -> None:
+        """Atomically persist produced audio and flip RESERVED -> AUDIO_READY.
+
+        Storing the bytes and the state transition in one transaction means a
+        delivery can never be left AUDIO_READY with no recoverable audio --
+        see docs/superpowers/specs/2026-08-09-t16-exactly-once-delivery-design.md.
+        """
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT deliveries.state, deliveries.message_id, messages.state "
+                "FROM deliveries JOIN messages ON messages.id = deliveries.message_id "
+                "WHERE deliveries.id = ?",
+                (delivery_id,),
+            ).fetchone()
+            if row is None:
+                raise RecordNotFound("delivery does not exist")
+            current = MessageState(row[0])
+            message_id = int(row[1])
+            message_state = MessageState(row[2])
+            if message_state is not current:
+                raise DatabaseInvariantError("message and delivery state disagree")
+            target = MessageState.AUDIO_READY
+            if target not in DELIVERY_TRANSITIONS.get(current, set()):
+                raise InvalidTransition(
+                    f"delivery cannot transition from {current.value} "
+                    f"to {target.value}"
+                )
+            delivery_update = connection.execute(
+                """
+                UPDATE deliveries
+                SET state = ?, audio_data = ?, updated_at = ?
+                WHERE id = ? AND state = ?
+                """,
+                (target.value, audio_bytes, timestamp, delivery_id, current.value),
+            )
+            message_update = connection.execute(
+                """
+                UPDATE messages
+                SET state = ?, updated_at = ?
+                WHERE id = ? AND state = ?
+                """,
+                (target.value, timestamp, message_id, current.value),
+            )
+            if delivery_update.rowcount != 1 or message_update.rowcount != 1:
+                raise DatabaseInvariantError("delivery state changed concurrently")
+
+    def get_audio_data(self, delivery_id: int) -> bytes:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT audio_data FROM deliveries WHERE id = ?",
+                (delivery_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise RecordNotFound("delivery does not exist")
+        if row[0] is None:
+            raise DatabaseInvariantError("delivery has no stored audio data")
+        return bytes(row[0])
 
     def get_message_state(self, message_id: int) -> MessageState:
         connection = self._connect()
