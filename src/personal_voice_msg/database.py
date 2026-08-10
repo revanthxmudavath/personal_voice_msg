@@ -1054,7 +1054,7 @@ class Database:
             if message_state is not current:
                 raise DatabaseInvariantError("message and delivery state disagree")
             target = MessageState.AUDIO_READY
-            if target not in DELIVERY_TRANSITIONS.get(current, set()):
+            if current is not MessageState.RESERVED:
                 raise InvalidTransition(
                     f"delivery cannot transition from {current.value} "
                     f"to {target.value}"

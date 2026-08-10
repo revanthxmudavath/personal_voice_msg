@@ -295,6 +295,31 @@ def test_failed_delivery_can_return_to_audio_ready_for_retry(tmp_path: Path) -> 
 
 
 @pytest.mark.fast
+def test_mark_audio_ready_rejects_a_failed_delivery(
+    tmp_path: Path,
+) -> None:
+    """FAILED and DELIVERY_UNKNOWN can reach AUDIO_READY via transition_delivery,
+    but mark_audio_ready is narrower: it only ever moves RESERVED -> AUDIO_READY.
+    Calling it on a FAILED delivery must not silently overwrite the stored
+    audio_data blob that a retry needs to reuse.
+    """
+    database = Database(tmp_path / "state.sqlite3")
+    database.migrate()
+    queue_message(database, "A warm original sentence.")
+    reservation = database.reserve_next_message(RECIPIENT, date(2026, 7, 18), NOW)
+    assert reservation is not None
+    database.mark_audio_ready(reservation.delivery_id, b"note-bytes", NOW)
+    database.transition_delivery(reservation.delivery_id, MessageState.SENDING, NOW)
+    database.transition_delivery(reservation.delivery_id, MessageState.FAILED, NOW)
+
+    with pytest.raises(InvalidTransition):
+        database.mark_audio_ready(reservation.delivery_id, b"overwrite-bytes", NOW)
+
+    # The original bytes are untouched.
+    assert database.get_audio_data(reservation.delivery_id) == b"note-bytes"
+
+
+@pytest.mark.fast
 @pytest.mark.parametrize("target", [MessageState.AUDIO_READY, MessageState.SENT])
 def test_delivery_unknown_can_transition_to_audio_ready_or_sent(
     tmp_path: Path, target: MessageState
