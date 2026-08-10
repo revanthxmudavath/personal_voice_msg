@@ -62,6 +62,11 @@ ALL_STATES_SQL = ", ".join(f"'{state.value}'" for state in MessageState)
 DELIVERY_STATES_SQL = ", ".join(
     f"'{state.value}'" for state in DELIVERY_TRANSITIONS
 )
+_ATTEMPT_OUTCOMES = {
+    MessageState.SENT,
+    MessageState.FAILED,
+    MessageState.DELIVERY_UNKNOWN,
+}
 CURRENT_SCHEMA_VERSION = 7
 OPAQUE_RECIPIENT_KEY = re.compile(r"recipient_[A-Za-z0-9][A-Za-z0-9_-]{2,119}")
 
@@ -1074,6 +1079,88 @@ class Database:
                 WHERE id = ? AND state = ?
                 """,
                 (target.value, timestamp, message_id, current.value),
+            )
+            if delivery_update.rowcount != 1 or message_update.rowcount != 1:
+                raise DatabaseInvariantError("delivery state changed concurrently")
+
+    def record_delivery_attempt(
+        self,
+        delivery_id: int,
+        outcome: MessageState,
+        now: datetime,
+        provider_message_id: str | None = None,
+    ) -> None:
+        """Atomically record one concluded WAHA send attempt.
+
+        Inserts a ``delivery_attempts`` audit row, transitions the delivery
+        (and its message) to ``outcome``, and -- only when ``outcome`` is
+        ``SENT`` -- writes ``deliveries.provider_message_id``, all in one
+        transaction. This is the literal "persist WAHA message identifiers
+        and attempt records transactionally" requirement from
+        IMPLEMENTATION_PLAN.md's T16 section.
+        """
+        if outcome not in _ATTEMPT_OUTCOMES:
+            raise ValueError(f"{outcome.value} is not a valid attempt outcome")
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT deliveries.state, deliveries.message_id, messages.state "
+                "FROM deliveries JOIN messages ON messages.id = deliveries.message_id "
+                "WHERE deliveries.id = ?",
+                (delivery_id,),
+            ).fetchone()
+            if row is None:
+                raise RecordNotFound("delivery does not exist")
+            current = MessageState(row[0])
+            message_id = int(row[1])
+            message_state = MessageState(row[2])
+            if message_state is not current:
+                raise DatabaseInvariantError("message and delivery state disagree")
+            if outcome not in DELIVERY_TRANSITIONS.get(current, set()):
+                raise InvalidTransition(
+                    f"delivery cannot transition from {current.value} "
+                    f"to {outcome.value}"
+                )
+
+            connection.execute(
+                """
+                INSERT INTO delivery_attempts (
+                    delivery_id, attempted_at, outcome, provider_message_id
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (delivery_id, timestamp, outcome.value, provider_message_id),
+            )
+            if outcome is MessageState.SENT:
+                delivery_update = connection.execute(
+                    """
+                    UPDATE deliveries
+                    SET state = ?, provider_message_id = ?, updated_at = ?
+                    WHERE id = ? AND state = ?
+                    """,
+                    (
+                        outcome.value,
+                        provider_message_id,
+                        timestamp,
+                        delivery_id,
+                        current.value,
+                    ),
+                )
+            else:
+                delivery_update = connection.execute(
+                    """
+                    UPDATE deliveries SET state = ?, updated_at = ?
+                    WHERE id = ? AND state = ?
+                    """,
+                    (outcome.value, timestamp, delivery_id, current.value),
+                )
+            message_update = connection.execute(
+                """
+                UPDATE messages
+                SET state = ?, updated_at = ?
+                WHERE id = ? AND state = ?
+                """,
+                (outcome.value, timestamp, message_id, current.value),
             )
             if delivery_update.rowcount != 1 or message_update.rowcount != 1:
                 raise DatabaseInvariantError("delivery state changed concurrently")
