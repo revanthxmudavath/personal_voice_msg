@@ -13,7 +13,12 @@ import pytest
 from personal_voice_msg.audio_pipeline import convert_to_opus, synthesize_to_wav
 from personal_voice_msg.config import Settings, load_settings
 from personal_voice_msg.database import Database
-from personal_voice_msg.sender import SenderError, send_voice_note, sign_request
+from personal_voice_msg.sender import (
+    SenderError,
+    SenderRejected,
+    send_voice_note,
+    sign_request,
+)
 from personal_voice_msg.voice_enrollment import enroll_voice
 
 pytestmark = pytest.mark.e2e
@@ -245,6 +250,84 @@ def test_invalid_signature_is_rejected(
             )
 
     with pytest.raises(SenderError, match="signature is invalid"):
+        asyncio.run(send())
+
+
+def test_invalid_audio_raises_sender_rejected_not_ambiguous(
+    settings: Settings, tmp_path: Path
+) -> None:
+    database = new_database(tmp_path)
+    now = datetime.now(UTC)
+    idempotency_key = f"t16-taxonomy-audio-{now.timestamp()}"
+    timestamp, signature = signed_request(settings, idempotency_key, now)
+
+    async def send() -> str:
+        async with aiohttp.ClientSession() as session:
+            return await send_voice_note(
+                session,
+                database,
+                settings,
+                b"this is plain text, not audio",
+                idempotency_key,
+                timestamp,
+                signature,
+                now,
+            )
+
+    with pytest.raises(SenderRejected):
+        asyncio.run(send())
+
+
+def test_invalid_signature_raises_sender_rejected(
+    settings: Settings, valid_audio_bytes: bytes, tmp_path: Path
+) -> None:
+    database = new_database(tmp_path)
+    now = datetime.now(UTC)
+    idempotency_key = f"t16-taxonomy-signature-{now.timestamp()}"
+    timestamp = int(now.timestamp())
+
+    async def send() -> str:
+        async with aiohttp.ClientSession() as session:
+            return await send_voice_note(
+                session,
+                database,
+                settings,
+                valid_audio_bytes,
+                idempotency_key,
+                timestamp,
+                "0" * 64,
+                now,
+            )
+
+    with pytest.raises(SenderRejected):
+        asyncio.run(send())
+
+
+def test_replayed_request_raises_sender_rejected(
+    settings: Settings, valid_audio_bytes: bytes, tmp_path: Path
+) -> None:
+    database = new_database(tmp_path)
+    now = datetime.now(UTC)
+    idempotency_key = f"t16-taxonomy-replay-{now.timestamp()}"
+    timestamp, signature = signed_request(settings, idempotency_key, now)
+    database.record_sender_nonce(
+        idempotency_key, timestamp, now + timedelta(minutes=5)
+    )
+
+    async def send() -> str:
+        async with aiohttp.ClientSession() as session:
+            return await send_voice_note(
+                session,
+                database,
+                settings,
+                valid_audio_bytes,
+                idempotency_key,
+                timestamp,
+                signature,
+                now,
+            )
+
+    with pytest.raises(SenderRejected):
         asyncio.run(send())
 
 

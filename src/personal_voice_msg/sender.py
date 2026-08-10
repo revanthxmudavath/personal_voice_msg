@@ -27,8 +27,18 @@ RESPONSE_CHUNK_BYTES = 8_192
 
 
 class SenderError(RuntimeError):
-    """Raised when a sender request is unauthenticated, stale, replayed,
-    carries invalid audio, or WAHA rejects the send."""
+    """Base class for a rejected, ambiguous, or otherwise failed sender
+    request."""
+
+
+class SenderRejected(SenderError):
+    """The request definitely never reached WAHA, or WAHA gave a definite
+    rejection. Safe to retry immediately -- see docs/task-logs/T16.md."""
+
+
+class SenderAmbiguous(SenderError):
+    """WAHA may or may not have processed the request. Must be
+    reconciled before any retry -- see docs/task-logs/T16.md."""
 
 
 def sign_request(key: bytes, idempotency_key: str, timestamp: int) -> str:
@@ -76,9 +86,9 @@ async def send_voice_note(
 
     key = settings.sender_auth_key.reveal().encode()
     if not verify_signature(key, idempotency_key, timestamp, signature):
-        raise SenderError("sender request signature is invalid")
+        raise SenderRejected("sender request signature is invalid")
     if not is_fresh(timestamp, now):
-        raise SenderError("sender request timestamp is stale")
+        raise SenderRejected("sender request timestamp is stale")
     try:
         database.record_sender_nonce(
             idempotency_key,
@@ -86,7 +96,7 @@ async def send_voice_note(
             now + timedelta(seconds=REPLAY_WINDOW_SECONDS),
         )
     except ReplayDetected:
-        raise SenderError("sender request was already processed") from None
+        raise SenderRejected("sender request was already processed") from None
 
     with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as handle:
         temp_path = Path(handle.name)
@@ -94,7 +104,7 @@ async def send_voice_note(
         temp_path.write_bytes(audio_bytes)
         validate_audio(temp_path)
     except AudioPipelineError as error:
-        raise SenderError(f"audio failed validation: {error}") from error
+        raise SenderRejected(f"audio failed validation: {error}") from error
     finally:
         temp_path.unlink(missing_ok=True)
 
@@ -117,19 +127,19 @@ async def send_voice_note(
             allow_redirects=False,
         ) as response:
             if response.status >= 400:
-                raise SenderError("WAHA send request failed")
+                raise SenderRejected("WAHA send request failed")
             chunks: list[bytes] = []
             total = 0
             async for chunk in response.content.iter_chunked(RESPONSE_CHUNK_BYTES):
                 total += len(chunk)
                 if total > MAX_RESPONSE_BYTES:
-                    raise SenderError("WAHA response exceeded the size limit")
+                    raise SenderAmbiguous("WAHA response exceeded the size limit")
                 chunks.append(chunk)
             payload = json.loads(b"".join(chunks))
     except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError):
-        raise SenderError("WAHA send request failed") from None
+        raise SenderAmbiguous("WAHA send request failed") from None
 
     try:
         return str(payload["key"]["id"])
     except (KeyError, TypeError):
-        raise SenderError("WAHA response was malformed") from None
+        raise SenderAmbiguous("WAHA response was malformed") from None
