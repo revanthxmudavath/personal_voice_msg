@@ -68,11 +68,23 @@ in one change.
 
 ## Current architecture snapshot (detail: AGENTS.md §Confirmed stack)
 
-T01-T09 complete. No runtime agent framework retained — T09 benchmarked
-LangChain/Gemini and rejected it; **deterministic T07 discovery is the
-production path.** T10 (original sentence generation) is next, using the
-owner-confirmed Gemini API Tier 1 Postpay project as the candidate provider,
-pending explicit production pinning per IMPLEMENTATION_PLAN.md §T10.
+T01-T15 complete and merged to main (T15: locked WAHA sender boundary).
+T09 benchmarked LangChain/Gemini and rejected it; **deterministic T07
+discovery is the production path.**
+
+T16 (exactly-once delivery and ambiguity recovery) is in progress on this
+branch (`task/T16-exactly-once-delivery`), not yet merged, executed via
+`superpowers:subagent-driven-development` — see
+`.superpowers/sdd/2026-08-09-t16-exactly-once-delivery/progress.md` for the
+authoritative task-by-task record. 11 of 13 plan tasks complete and
+reviewed clean. Task 12 (the done-when-gate fault-injection suite) is
+in progress: a fix for a review-found gap (reconciliation-window
+false-positive + tautological assertion) is implemented and passes
+everything not requiring WAHA, but is not yet live-verified or
+re-reviewed — the real WAHA session is currently logged out and refusing
+re-pairing. Task 13 has not started. T16 is on the plan's mandatory
+independent-security-review list and still needs a whole-branch review
+before merge.
 
 ## Commands
 

@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from personal_voice_msg.database import Database, MigrationError
+from personal_voice_msg.database import (
+    DELIVERY_STATES_SQL,
+    Database,
+    MigrationError,
+)
 from personal_voice_msg.normalization import normalized_hash
 
 EXPECTED_TABLES = {
@@ -19,7 +23,24 @@ EXPECTED_TABLES = {
     "daily_runs",
     "message_rejections",
     "sender_auth_nonces",
+    "delivery_attempts",
 }
+
+# Deliveries table definition without audio_data column (for v6 and earlier downgrades)
+_DELIVERIES_WITHOUT_AUDIO_DATA_SQL = (
+    "CREATE TABLE deliveries (\n"
+    "                id INTEGER PRIMARY KEY,\n"
+    "                message_id INTEGER NOT NULL UNIQUE\n"
+    "                    REFERENCES messages(id) ON DELETE RESTRICT,\n"
+    "                recipient_key TEXT NOT NULL,\n"
+    "                pacific_date TEXT NOT NULL,\n"
+    f"                state TEXT NOT NULL CHECK (state IN ({DELIVERY_STATES_SQL})),\n"
+    "                provider_message_id TEXT,\n"
+    "                created_at TEXT NOT NULL,\n"
+    "                updated_at TEXT NOT NULL,\n"
+    "                UNIQUE (recipient_key, pacific_date)\n"
+    "            )"
+)
 
 
 def read_table_names(path: Path) -> set[str]:
@@ -30,16 +51,39 @@ def read_table_names(path: Path) -> set[str]:
     return {str(row[0]) for row in rows}
 
 
+def _strip_audio_data_column(
+    connection: sqlite3.Connection, temp_table: str
+) -> None:
+    """Helper to remove audio_data column from deliveries table by recreation."""
+    connection.execute(f"ALTER TABLE deliveries RENAME TO {temp_table}")
+    connection.execute(_DELIVERIES_WITHOUT_AUDIO_DATA_SQL)
+    connection.execute(
+        f"""
+        INSERT INTO deliveries
+        SELECT id, message_id, recipient_key, pacific_date, state,
+               provider_message_id, created_at, updated_at
+        FROM {temp_table}
+        """
+    )
+    connection.execute(f"DROP TABLE {temp_table}")
+    connection.execute(
+        "CREATE INDEX deliveries_recipient_date_idx "
+        "ON deliveries(recipient_key, pacific_date)"
+    )
+
+
 def downgrade_current_database_to_v2(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE IF EXISTS sender_auth_nonces")
         connection.execute("DROP TABLE IF EXISTS message_rejections")
         connection.execute("DROP TABLE IF EXISTS daily_runs")
+        connection.execute("DROP TABLE IF EXISTS delivery_attempts")
+        _strip_audio_data_column(connection, "deliveries_v7")
         connection.execute(
             "DROP INDEX IF EXISTS message_history_normalized_hash_unique_idx"
         )
         connection.execute(
-            "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6)"
+            "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7)"
         )
 
 
@@ -48,8 +92,10 @@ def downgrade_current_database_to_v3(path: Path) -> None:
         connection.execute("DROP TABLE IF EXISTS sender_auth_nonces")
         connection.execute("DROP TABLE IF EXISTS message_rejections")
         connection.execute("DROP TABLE IF EXISTS daily_runs")
+        connection.execute("DROP TABLE IF EXISTS delivery_attempts")
+        _strip_audio_data_column(connection, "deliveries_v7")
         connection.execute(
-            "DELETE FROM schema_migrations WHERE version IN (4, 5, 6)"
+            "DELETE FROM schema_migrations WHERE version IN (4, 5, 6, 7)"
         )
 
 
@@ -57,13 +103,76 @@ def downgrade_current_database_to_v4(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE IF EXISTS sender_auth_nonces")
         connection.execute("DROP TABLE IF EXISTS message_rejections")
-        connection.execute("DELETE FROM schema_migrations WHERE version IN (5, 6)")
+        connection.execute("DROP TABLE IF EXISTS delivery_attempts")
+        _strip_audio_data_column(connection, "deliveries_v7")
+        connection.execute("DELETE FROM schema_migrations WHERE version IN (5, 6, 7)")
 
 
 def downgrade_current_database_to_v5(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE IF EXISTS sender_auth_nonces")
-        connection.execute("DELETE FROM schema_migrations WHERE version = 6")
+        connection.execute("DROP TABLE IF EXISTS delivery_attempts")
+        _strip_audio_data_column(connection, "deliveries_v7")
+        connection.execute("DELETE FROM schema_migrations WHERE version IN (6, 7)")
+
+
+def downgrade_current_database_to_v6(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE IF EXISTS delivery_attempts")
+        _strip_audio_data_column(connection, "deliveries_v6")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 7")
+
+
+@pytest.mark.fast
+def test_version_six_database_upgrades_to_delivery_attempts_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "version-six.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    downgrade_current_database_to_v6(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO runs (run_kind, pacific_date, state, started_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "migration_probe",
+                "2026-08-09",
+                "preserve-me",
+                "2026-08-09T13:50:00+00:00",
+            ),
+        )
+
+    database.migrate()
+
+    with sqlite3.connect(database_path) as connection:
+        versions = connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        preserved = connection.execute(
+            "SELECT run_kind, pacific_date, state, started_at FROM runs"
+        ).fetchall()
+        delivery_attempts_table = connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'delivery_attempts'"
+        ).fetchone()
+        deliveries_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(deliveries)")
+        }
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+    assert preserved == [
+        (
+            "migration_probe",
+            "2026-08-09",
+            "preserve-me",
+            "2026-08-09T13:50:00+00:00",
+        )
+    ]
+    assert delivery_attempts_table == (1,)
+    assert "audio_data" in deliveries_columns
 
 
 @pytest.mark.fast
@@ -88,7 +197,7 @@ def test_rerunning_migration_is_idempotent(tmp_path: Path) -> None:
         versions = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
 
 
 @pytest.mark.fast
@@ -416,7 +525,7 @@ def test_version_three_database_upgrades_to_daily_runs_without_data_loss(
             "SELECT 1 FROM sqlite_master "
             "WHERE type = 'table' AND name = 'daily_runs'"
         ).fetchone()
-    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
     assert preserved == [
         (
             "migration_probe",
@@ -468,7 +577,7 @@ def test_version_five_database_upgrades_to_sender_auth_nonces_without_data_loss(
             "SELECT 1 FROM sqlite_master "
             "WHERE type = 'table' AND name = 'sender_auth_nonces'"
         ).fetchone()
-    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
     assert preserved == [
         (
             "migration_probe",
@@ -520,7 +629,7 @@ def test_version_four_database_upgrades_to_message_rejections_without_data_loss(
             "SELECT 1 FROM sqlite_master "
             "WHERE type = 'table' AND name = 'message_rejections'"
         ).fetchone()
-    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
     assert preserved == [
         (
             "migration_probe",
@@ -550,7 +659,7 @@ def test_version_two_database_upgrades_to_unique_normalized_hashes(
         indexes = connection.execute(
             "PRAGMA index_list(message_history)"
         ).fetchall()
-    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
     assert any(
         row[1] == "message_history_normalized_hash_unique_idx" and row[2] == 1
         for row in indexes

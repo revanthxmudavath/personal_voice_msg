@@ -173,11 +173,14 @@ def produce_voice_note(
     now: datetime,
     *,
     model: TTSModel | None = None,
-) -> Path:
-    """Synthesize, convert, and validate a voice note; mark it ``audio_ready``.
+) -> bytes:
+    """Synthesize, convert, and validate a voice note; persist it as the
+    delivery's durable audio and mark it ``audio_ready``.
 
-    Leaves no file at ``destination`` and no delivery-state change on any
-    failure, so a failed synthesis never leaves a sendable artifact behind.
+    Leaves no on-disk file and no delivery-state change on any failure.
+    Synthesis runs exactly once per delivery -- every later send attempt
+    reads the returned/stored bytes back via ``Database.get_audio_data``
+    instead of re-synthesizing (Pocket TTS is not deterministic).
     """
 
     temp_wav = destination.with_suffix(".wav")
@@ -185,27 +188,29 @@ def produce_voice_note(
         synthesize_to_wav(embedding_path, text, temp_wav, model=model)
         convert_to_opus(temp_wav, destination)
         validate_audio(destination)
+        audio_bytes = destination.read_bytes()
     except Exception:
         temp_wav.unlink(missing_ok=True)
         destination.unlink(missing_ok=True)
         raise
     else:
         temp_wav.unlink(missing_ok=True)
+        destination.unlink(missing_ok=True)
 
-    database.transition_delivery(delivery_id, MessageState.AUDIO_READY, now)
-    return destination
+    database.mark_audio_ready(delivery_id, audio_bytes, now)
+    return audio_bytes
 
 
 def remove_audio_after_delivery(
     database: Database,
     delivery_id: int,
-    audio_path: Path,
+    now: datetime,
 ) -> None:
-    """Delete the temporary voice-note file, but only once delivery is sent."""
+    """Clear the delivery's stored audio, but only once it is sent."""
 
     state = database.get_delivery_state(delivery_id)
     if state is not MessageState.SENT:
         raise AudioPipelineError(
             f"delivery is not sent (state={state.value}); refusing to remove audio"
         )
-    audio_path.unlink(missing_ok=True)
+    database.clear_audio_data(delivery_id, now)

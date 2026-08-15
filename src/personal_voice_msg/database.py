@@ -52,14 +52,22 @@ DELIVERY_TRANSITIONS = {
         MessageState.DELIVERY_UNKNOWN,
     },
     MessageState.SENT: set(),
-    MessageState.FAILED: set(),
-    MessageState.DELIVERY_UNKNOWN: set(),
+    MessageState.FAILED: {MessageState.AUDIO_READY},
+    MessageState.DELIVERY_UNKNOWN: {
+        MessageState.AUDIO_READY,
+        MessageState.SENT,
+    },
 }
 ALL_STATES_SQL = ", ".join(f"'{state.value}'" for state in MessageState)
 DELIVERY_STATES_SQL = ", ".join(
     f"'{state.value}'" for state in DELIVERY_TRANSITIONS
 )
-CURRENT_SCHEMA_VERSION = 6
+_ATTEMPT_OUTCOMES = {
+    MessageState.SENT,
+    MessageState.FAILED,
+    MessageState.DELIVERY_UNKNOWN,
+}
+CURRENT_SCHEMA_VERSION = 7
 OPAQUE_RECIPIENT_KEY = re.compile(r"recipient_[A-Za-z0-9][A-Za-z0-9_-]{2,119}")
 
 
@@ -269,6 +277,22 @@ SCHEMA_V6_STATEMENTS = (
     )
     """,
 )
+# T16's durable audio storage and delivery attempt records (docs/task-logs/T16.md)
+SCHEMA_V7_STATEMENTS = (
+    "ALTER TABLE deliveries ADD COLUMN audio_data BLOB",
+    """
+    CREATE TABLE IF NOT EXISTS delivery_attempts (
+        id INTEGER PRIMARY KEY,
+        delivery_id INTEGER NOT NULL
+            REFERENCES deliveries(id) ON DELETE RESTRICT,
+        attempted_at TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (
+            outcome IN ('sent', 'failed', 'delivery_unknown')
+        ),
+        provider_message_id TEXT
+    )
+    """,
+)
 EXPECTED_SCHEMA_V1_OBJECTS = {
     ("table", "schema_migrations"): SCHEMA_V1_STATEMENTS[0],
     ("table", "sources"): SCHEMA_V1_STATEMENTS[1],
@@ -308,6 +332,29 @@ EXPECTED_SCHEMA_V6_OBJECTS = {
     **EXPECTED_SCHEMA_V5_OBJECTS,
     ("table", "sender_auth_nonces"): SCHEMA_V6_STATEMENTS[0],
 }
+# Build V7 objects by extending V6
+EXPECTED_SCHEMA_V7_OBJECTS = {
+    **EXPECTED_SCHEMA_V6_OBJECTS,
+    ("table", "delivery_attempts"): SCHEMA_V7_STATEMENTS[1],
+}
+# Override deliveries table with post-ALTER schema
+# Literal schema text from real migration run (noqa: E501 for captured text)
+_v7_deliveries_sql = (  # noqa: E501
+    "CREATE TABLE deliveries (\n"
+    "        id INTEGER PRIMARY KEY,\n"
+    "        message_id INTEGER NOT NULL UNIQUE\n"
+    "            REFERENCES messages(id) ON DELETE RESTRICT,\n"
+    "        recipient_key TEXT NOT NULL,\n"
+    "        pacific_date TEXT NOT NULL,\n"
+    "        state TEXT NOT NULL CHECK (state IN ('reserved', 'audio_ready', "
+    "'sending', 'sent', 'failed', 'delivery_unknown')),\n"
+    "        provider_message_id TEXT,\n"
+    "        created_at TEXT NOT NULL,\n"
+    "        updated_at TEXT NOT NULL, audio_data BLOB,\n"
+    "        UNIQUE (recipient_key, pacific_date)\n"
+    "    )"
+)
+EXPECTED_SCHEMA_V7_OBJECTS[("table", "deliveries")] = _v7_deliveries_sql
 
 
 def _timestamp(value: datetime) -> str:
@@ -368,6 +415,19 @@ def _validate_schema(
             raise MigrationError(f"database schema object {name} is invalid")
 
 
+def _stage_schema_objects(
+    expected_objects: dict[tuple[str, str], str],
+    deliveries_already_altered: bool,
+) -> dict[tuple[str, str], str]:
+    """Return expected_objects with post-ALTER deliveries schema if V7 was reached."""
+    if not deliveries_already_altered:
+        return expected_objects
+    return {
+        **expected_objects,
+        ("table", "deliveries"): EXPECTED_SCHEMA_V7_OBJECTS[("table", "deliveries")],
+    }
+
+
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -400,6 +460,8 @@ class Database:
         connection = self._connect()
         try:
             versions = _migration_versions(connection)
+            versions_at_entry = versions  # Save initial state for schema validation
+            v7_reached = 7 in versions_at_entry
             if versions not in (
                 set(),
                 {1},
@@ -407,7 +469,8 @@ class Database:
                 {1, 2, 3},
                 {1, 2, 3, 4},
                 {1, 2, 3, 4, 5},
-                {1, 2, 3, 4, 5, CURRENT_SCHEMA_VERSION},
+                {1, 2, 3, 4, 5, 6},
+                {1, 2, 3, 4, 5, 6, CURRENT_SCHEMA_VERSION},
             ):
                 raise MigrationError("database has an unknown migration version")
             connection.execute("PRAGMA journal_mode = WAL")
@@ -421,7 +484,8 @@ class Database:
                 {1, 2, 3},
                 {1, 2, 3, 4},
                 {1, 2, 3, 4, 5},
-                {1, 2, 3, 4, 5, CURRENT_SCHEMA_VERSION},
+                {1, 2, 3, 4, 5, 6},
+                {1, 2, 3, 4, 5, 6, CURRENT_SCHEMA_VERSION},
             ):
                 raise MigrationError("database has an unknown migration version")
             if not versions:
@@ -432,7 +496,10 @@ class Database:
                 )
                 versions = {1}
 
-            _validate_schema(connection, EXPECTED_SCHEMA_V1_OBJECTS)
+            staged_objects_v1 = _stage_schema_objects(
+                EXPECTED_SCHEMA_V1_OBJECTS, v7_reached
+            )
+            _validate_schema(connection, staged_objects_v1)
             if versions == {1}:
                 for statement in SCHEMA_V2_STATEMENTS:
                     connection.execute(statement)
@@ -454,7 +521,10 @@ class Database:
                 )
                 versions = {1, 2}
 
-            _validate_schema(connection, EXPECTED_SCHEMA_V2_OBJECTS)
+            staged_objects_v2 = _stage_schema_objects(
+                EXPECTED_SCHEMA_V2_OBJECTS, v7_reached
+            )
+            _validate_schema(connection, staged_objects_v2)
             if versions == {1, 2}:
                 try:
                     for statement in SCHEMA_V3_STATEMENTS:
@@ -469,7 +539,10 @@ class Database:
                 )
                 versions = {1, 2, 3}
 
-            _validate_schema(connection, EXPECTED_SCHEMA_V3_OBJECTS)
+            staged_objects_v3 = _stage_schema_objects(
+                EXPECTED_SCHEMA_V3_OBJECTS, v7_reached
+            )
+            _validate_schema(connection, staged_objects_v3)
             if versions == {1, 2, 3}:
                 for statement in SCHEMA_V4_STATEMENTS:
                     connection.execute(statement)
@@ -479,7 +552,10 @@ class Database:
                 )
                 versions = {1, 2, 3, 4}
 
-            _validate_schema(connection, EXPECTED_SCHEMA_V4_OBJECTS)
+            staged_objects_v4 = _stage_schema_objects(
+                EXPECTED_SCHEMA_V4_OBJECTS, v7_reached
+            )
+            _validate_schema(connection, staged_objects_v4)
             if versions == {1, 2, 3, 4}:
                 for statement in SCHEMA_V5_STATEMENTS:
                     connection.execute(statement)
@@ -489,16 +565,32 @@ class Database:
                 )
                 versions = {1, 2, 3, 4, 5}
 
-            _validate_schema(connection, EXPECTED_SCHEMA_V5_OBJECTS)
+            staged_objects_v5 = _stage_schema_objects(
+                EXPECTED_SCHEMA_V5_OBJECTS, v7_reached
+            )
+            _validate_schema(connection, staged_objects_v5)
             if versions == {1, 2, 3, 4, 5}:
                 for statement in SCHEMA_V6_STATEMENTS:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?)",
+                    (6,),
+                )
+                versions = {1, 2, 3, 4, 5, 6}
+
+            staged_objects_v6 = _stage_schema_objects(
+                EXPECTED_SCHEMA_V6_OBJECTS, v7_reached
+            )
+            _validate_schema(connection, staged_objects_v6)
+            if versions == {1, 2, 3, 4, 5, 6}:
+                for statement in SCHEMA_V7_STATEMENTS:
                     connection.execute(statement)
                 connection.execute(
                     "INSERT INTO schema_migrations (version) VALUES (?)",
                     (CURRENT_SCHEMA_VERSION,),
                 )
 
-            _validate_schema(connection, EXPECTED_SCHEMA_V6_OBJECTS)
+            _validate_schema(connection, EXPECTED_SCHEMA_V7_OBJECTS)
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -942,6 +1034,173 @@ class Database:
             if delivery_update.rowcount != 1 or message_update.rowcount != 1:
                 raise DatabaseInvariantError("delivery state changed concurrently")
 
+    def mark_audio_ready(
+        self, delivery_id: int, audio_bytes: bytes, now: datetime
+    ) -> None:
+        """Atomically persist produced audio and flip RESERVED -> AUDIO_READY.
+
+        Storing the bytes and the state transition in one transaction means a
+        delivery can never be left AUDIO_READY with no recoverable audio --
+        see docs/superpowers/specs/2026-08-09-t16-exactly-once-delivery-design.md.
+        """
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT deliveries.state, deliveries.message_id, messages.state "
+                "FROM deliveries JOIN messages ON messages.id = deliveries.message_id "
+                "WHERE deliveries.id = ?",
+                (delivery_id,),
+            ).fetchone()
+            if row is None:
+                raise RecordNotFound("delivery does not exist")
+            current = MessageState(row[0])
+            message_id = int(row[1])
+            message_state = MessageState(row[2])
+            if message_state is not current:
+                raise DatabaseInvariantError("message and delivery state disagree")
+            target = MessageState.AUDIO_READY
+            if current is not MessageState.RESERVED:
+                raise InvalidTransition(
+                    f"delivery cannot transition from {current.value} "
+                    f"to {target.value}"
+                )
+            delivery_update = connection.execute(
+                """
+                UPDATE deliveries
+                SET state = ?, audio_data = ?, updated_at = ?
+                WHERE id = ? AND state = ?
+                """,
+                (target.value, audio_bytes, timestamp, delivery_id, current.value),
+            )
+            message_update = connection.execute(
+                """
+                UPDATE messages
+                SET state = ?, updated_at = ?
+                WHERE id = ? AND state = ?
+                """,
+                (target.value, timestamp, message_id, current.value),
+            )
+            if delivery_update.rowcount != 1 or message_update.rowcount != 1:
+                raise DatabaseInvariantError("delivery state changed concurrently")
+
+    def record_delivery_attempt(
+        self,
+        delivery_id: int,
+        outcome: MessageState,
+        now: datetime,
+        provider_message_id: str | None = None,
+    ) -> None:
+        """Atomically record one concluded WAHA send attempt.
+
+        Inserts a ``delivery_attempts`` audit row, transitions the delivery
+        (and its message) to ``outcome``, and -- only when ``outcome`` is
+        ``SENT`` -- writes ``deliveries.provider_message_id``, all in one
+        transaction. This is the literal "persist WAHA message identifiers
+        and attempt records transactionally" requirement from
+        IMPLEMENTATION_PLAN.md's T16 section.
+        """
+        if outcome not in _ATTEMPT_OUTCOMES:
+            raise ValueError(f"{outcome.value} is not a valid attempt outcome")
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT deliveries.state, deliveries.message_id, messages.state "
+                "FROM deliveries JOIN messages ON messages.id = deliveries.message_id "
+                "WHERE deliveries.id = ?",
+                (delivery_id,),
+            ).fetchone()
+            if row is None:
+                raise RecordNotFound("delivery does not exist")
+            current = MessageState(row[0])
+            message_id = int(row[1])
+            message_state = MessageState(row[2])
+            if message_state is not current:
+                raise DatabaseInvariantError("message and delivery state disagree")
+            if outcome not in DELIVERY_TRANSITIONS.get(current, set()):
+                raise InvalidTransition(
+                    f"delivery cannot transition from {current.value} "
+                    f"to {outcome.value}"
+                )
+
+            connection.execute(
+                """
+                INSERT INTO delivery_attempts (
+                    delivery_id, attempted_at, outcome, provider_message_id
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (delivery_id, timestamp, outcome.value, provider_message_id),
+            )
+            if outcome is MessageState.SENT:
+                delivery_update = connection.execute(
+                    """
+                    UPDATE deliveries
+                    SET state = ?, provider_message_id = ?, updated_at = ?
+                    WHERE id = ? AND state = ?
+                    """,
+                    (
+                        outcome.value,
+                        provider_message_id,
+                        timestamp,
+                        delivery_id,
+                        current.value,
+                    ),
+                )
+            else:
+                delivery_update = connection.execute(
+                    """
+                    UPDATE deliveries SET state = ?, updated_at = ?
+                    WHERE id = ? AND state = ?
+                    """,
+                    (outcome.value, timestamp, delivery_id, current.value),
+                )
+            message_update = connection.execute(
+                """
+                UPDATE messages
+                SET state = ?, updated_at = ?
+                WHERE id = ? AND state = ?
+                """,
+                (outcome.value, timestamp, message_id, current.value),
+            )
+            if delivery_update.rowcount != 1 or message_update.rowcount != 1:
+                raise DatabaseInvariantError("delivery state changed concurrently")
+
+    def clear_audio_data(self, delivery_id: int, now: datetime) -> None:
+        """Null out a delivery's stored audio once it is confirmed SENT."""
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT state FROM deliveries WHERE id = ?", (delivery_id,)
+            ).fetchone()
+            if row is None:
+                raise RecordNotFound("delivery does not exist")
+            if MessageState(row[0]) is not MessageState.SENT:
+                raise InvalidTransition(
+                    "audio can only be cleared once the delivery is sent"
+                )
+            updated = connection.execute(
+                "UPDATE deliveries SET audio_data = NULL, updated_at = ? "
+                "WHERE id = ? AND state = ?",
+                (timestamp, delivery_id, MessageState.SENT.value),
+            )
+            if updated.rowcount != 1:
+                raise DatabaseInvariantError("delivery state changed concurrently")
+
+    def get_audio_data(self, delivery_id: int) -> bytes:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT audio_data FROM deliveries WHERE id = ?",
+                (delivery_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise RecordNotFound("delivery does not exist")
+        if row[0] is None:
+            raise DatabaseInvariantError("delivery has no stored audio data")
+        return bytes(row[0])
+
     def get_message_state(self, message_id: int) -> MessageState:
         connection = self._connect()
         try:
@@ -955,6 +1214,22 @@ class Database:
             raise RecordNotFound("message does not exist")
         return MessageState(row[0])
 
+    def get_delivery_for_date(
+        self, recipient_key: str, pacific_date: date
+    ) -> int | None:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT id FROM deliveries
+                WHERE recipient_key = ? AND pacific_date = ?
+                """,
+                (recipient_key, pacific_date.isoformat()),
+            ).fetchone()
+        finally:
+            connection.close()
+        return None if row is None else int(row[0])
+
     def get_delivery_state(self, delivery_id: int) -> MessageState:
         connection = self._connect()
         try:
@@ -967,6 +1242,28 @@ class Database:
         if row is None:
             raise RecordNotFound("delivery does not exist")
         return MessageState(row[0])
+
+    def get_latest_attempt_time(self, delivery_id: int) -> datetime:
+        """Return the ``attempted_at`` of the most recent recorded attempt.
+
+        Used by the ``DELIVERY_UNKNOWN`` reconciliation path (T16) as the
+        start of the window to search WAHA's chat history for a matching
+        send. Raises ``ValueError`` if no attempt row exists for this
+        delivery -- a ``DELIVERY_UNKNOWN`` delivery always has at least one,
+        since ``record_delivery_attempt`` is what puts it there.
+        """
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT attempted_at FROM delivery_attempts "
+                "WHERE delivery_id = ? ORDER BY id DESC LIMIT 1",
+                (delivery_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise ValueError("no attempt recorded for a delivery_unknown delivery")
+        return datetime.fromisoformat(str(row[0]))
 
     def get_message_text(self, message_id: int) -> str:
         connection = self._connect()

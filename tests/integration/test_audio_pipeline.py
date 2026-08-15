@@ -21,7 +21,7 @@ from personal_voice_msg.audio_pipeline import (
     synthesize_to_wav,
     validate_audio,
 )
-from personal_voice_msg.database import Database, MessageState
+from personal_voice_msg.database import Database, DatabaseInvariantError, MessageState
 from personal_voice_msg.history import MessageHistory
 from personal_voice_msg.voice_enrollment import enroll_voice
 
@@ -289,7 +289,7 @@ def test_valid_voice_note_decodes_as_ogg_opus(
 # ---------------------------------------------------------------------------
 
 
-def test_produce_voice_note_marks_audio_ready_and_creates_valid_file(
+def test_produce_voice_note_persists_audio_and_marks_ready(
     tmp_path: Path, model: TTSModel, voice_embedding: Path
 ) -> None:
     database = Database(tmp_path / "state.sqlite3")
@@ -306,10 +306,10 @@ def test_produce_voice_note_marks_audio_ready_and_creates_valid_file(
         model=model,
     )
 
-    assert result == destination
-    assert destination.is_file()
-    validate_audio(destination)
+    assert isinstance(result, bytes) and result
+    assert not destination.exists()
     assert database.get_delivery_state(delivery_id) == MessageState.AUDIO_READY
+    assert database.get_audio_data(delivery_id) == result
 
 
 def test_failed_synthesis_leaves_no_sendable_artifact(
@@ -336,7 +336,7 @@ def test_failed_synthesis_leaves_no_sendable_artifact(
     assert database.get_delivery_state(delivery_id) == MessageState.RESERVED
 
 
-def test_successful_delivery_removes_temporary_audio(
+def test_successful_delivery_clears_stored_audio(
     tmp_path: Path, model: TTSModel, voice_embedding: Path
 ) -> None:
     database = Database(tmp_path / "state.sqlite3")
@@ -352,20 +352,22 @@ def test_successful_delivery_removes_temporary_audio(
         model=model,
     )
     database.transition_delivery(delivery_id, MessageState.SENDING, NOW)
-    database.transition_delivery(delivery_id, MessageState.SENT, NOW)
+    database.record_delivery_attempt(delivery_id, MessageState.SENT, NOW)
 
-    remove_audio_after_delivery(database, delivery_id, destination)
+    remove_audio_after_delivery(database, delivery_id, NOW)
 
-    assert not destination.exists()
+    with pytest.raises(DatabaseInvariantError):
+        database.get_audio_data(delivery_id)
 
 
 def test_remove_audio_before_delivery_confirmed_is_refused(tmp_path: Path) -> None:
+    delivery_id = record_and_reserve(
+        Database(tmp_path / "state.sqlite3"), "Not sent yet, do not delete me."
+    )
     database = Database(tmp_path / "state.sqlite3")
-    delivery_id = record_and_reserve(database, "Not sent yet, do not delete me.")
-    destination = tmp_path / "note.ogg"
-    destination.write_bytes(b"placeholder")
+    database.mark_audio_ready(delivery_id, b"placeholder", NOW)
 
     with pytest.raises(AudioPipelineError, match="not.*sent"):
-        remove_audio_after_delivery(database, delivery_id, destination)
+        remove_audio_after_delivery(database, delivery_id, NOW)
 
-    assert destination.exists()
+    assert database.get_audio_data(delivery_id) == b"placeholder"

@@ -219,8 +219,8 @@ def test_delivery_transitions_reject_skips_and_backwards_moves(tmp_path: Path) -
     ("terminal_state", "next_state"),
     [
         (MessageState.SENT, MessageState.FAILED),
-        (MessageState.FAILED, MessageState.SENT),
-        (MessageState.DELIVERY_UNKNOWN, MessageState.FAILED),
+        (MessageState.FAILED, MessageState.SENDING),
+        (MessageState.DELIVERY_UNKNOWN, MessageState.SENDING),
     ],
 )
 def test_terminal_delivery_states_cannot_transition(
@@ -237,6 +237,107 @@ def test_terminal_delivery_states_cannot_transition(
 
     with pytest.raises(InvalidTransition):
         database.transition_delivery(reservation.delivery_id, next_state, NOW)
+
+
+@pytest.mark.fast
+def test_mark_audio_ready_persists_bytes_and_transitions_atomically(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "state.sqlite3")
+    database.migrate()
+    queue_message(database, "A warm original sentence.")
+    reservation = database.reserve_next_message(RECIPIENT, date(2026, 7, 18), NOW)
+    assert reservation is not None
+
+    database.mark_audio_ready(reservation.delivery_id, b"fake-ogg-bytes", NOW)
+
+    assert (
+        database.get_delivery_state(reservation.delivery_id)
+        is MessageState.AUDIO_READY
+    )
+    assert database.get_audio_data(reservation.delivery_id) == b"fake-ogg-bytes"
+
+
+@pytest.mark.fast
+def test_mark_audio_ready_rejects_a_delivery_not_reserved(tmp_path: Path) -> None:
+    database = Database(tmp_path / "state.sqlite3")
+    database.migrate()
+    queue_message(database, "A warm original sentence.")
+    reservation = database.reserve_next_message(RECIPIENT, date(2026, 7, 18), NOW)
+    assert reservation is not None
+    database.mark_audio_ready(reservation.delivery_id, b"first-bytes", NOW)
+
+    with pytest.raises(InvalidTransition):
+        database.mark_audio_ready(reservation.delivery_id, b"second-bytes", NOW)
+
+
+@pytest.mark.fast
+def test_failed_delivery_can_return_to_audio_ready_for_retry(tmp_path: Path) -> None:
+    database = Database(tmp_path / "state.sqlite3")
+    database.migrate()
+    queue_message(database, "A warm original sentence.")
+    reservation = database.reserve_next_message(RECIPIENT, date(2026, 7, 18), NOW)
+    assert reservation is not None
+    database.mark_audio_ready(reservation.delivery_id, b"note-bytes", NOW)
+    database.transition_delivery(reservation.delivery_id, MessageState.SENDING, NOW)
+    database.transition_delivery(reservation.delivery_id, MessageState.FAILED, NOW)
+
+    database.transition_delivery(
+        reservation.delivery_id, MessageState.AUDIO_READY, NOW
+    )
+
+    assert (
+        database.get_delivery_state(reservation.delivery_id)
+        is MessageState.AUDIO_READY
+    )
+    # The stored bytes survive the round trip -- retries reuse the same audio.
+    assert database.get_audio_data(reservation.delivery_id) == b"note-bytes"
+
+
+@pytest.mark.fast
+def test_mark_audio_ready_rejects_a_failed_delivery(
+    tmp_path: Path,
+) -> None:
+    """FAILED and DELIVERY_UNKNOWN can reach AUDIO_READY via transition_delivery,
+    but mark_audio_ready is narrower: it only ever moves RESERVED -> AUDIO_READY.
+    Calling it on a FAILED delivery must not silently overwrite the stored
+    audio_data blob that a retry needs to reuse.
+    """
+    database = Database(tmp_path / "state.sqlite3")
+    database.migrate()
+    queue_message(database, "A warm original sentence.")
+    reservation = database.reserve_next_message(RECIPIENT, date(2026, 7, 18), NOW)
+    assert reservation is not None
+    database.mark_audio_ready(reservation.delivery_id, b"note-bytes", NOW)
+    database.transition_delivery(reservation.delivery_id, MessageState.SENDING, NOW)
+    database.transition_delivery(reservation.delivery_id, MessageState.FAILED, NOW)
+
+    with pytest.raises(InvalidTransition):
+        database.mark_audio_ready(reservation.delivery_id, b"overwrite-bytes", NOW)
+
+    # The original bytes are untouched.
+    assert database.get_audio_data(reservation.delivery_id) == b"note-bytes"
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("target", [MessageState.AUDIO_READY, MessageState.SENT])
+def test_delivery_unknown_can_transition_to_audio_ready_or_sent(
+    tmp_path: Path, target: MessageState
+) -> None:
+    database = Database(tmp_path / f"unknown-{target.value}.sqlite3")
+    database.migrate()
+    queue_message(database, "A warm original sentence.")
+    reservation = database.reserve_next_message(RECIPIENT, date(2026, 7, 18), NOW)
+    assert reservation is not None
+    database.mark_audio_ready(reservation.delivery_id, b"note-bytes", NOW)
+    database.transition_delivery(reservation.delivery_id, MessageState.SENDING, NOW)
+    database.transition_delivery(
+        reservation.delivery_id, MessageState.DELIVERY_UNKNOWN, NOW
+    )
+
+    database.transition_delivery(reservation.delivery_id, target, NOW)
+
+    assert database.get_delivery_state(reservation.delivery_id) is target
 
 
 @pytest.mark.fast

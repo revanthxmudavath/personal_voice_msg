@@ -13,3 +13,4 @@ __pycache__/
 !.env.example
 node_modules/
 CODE_REVIEW_PROMPTS/
+.worktrees/
