@@ -12,6 +12,9 @@
       "description": "Quick syntax check after file write (3-second max)"
     }
   ],
+  "env": {
+    "CLAUDE_CODE_FORK_SUBAGENT": "1"
+  },
   "context-management": {
     "compaction-threshold-tokens": 50000,
     "preserve-on-compaction": [
