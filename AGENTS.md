@@ -544,9 +544,28 @@ a git-ignored-but-still-in-repo directory, correctly flagged by
 
 ## Immediate next step
 
-Merge `task/T15-locked-waha-sender` and begin T16 (Exactly-once delivery
-and ambiguity recovery) per `IMPLEMENTATION_PLAN.md`. T16 requires
-independent security review (plan's review list: T06, T15, T16, T17,
-T18). T16 is what actually persists WAHA message identifiers and attempt
-records for exactly-once delivery -- T15's `sender_auth_nonces` table is
-authentication-layer replay protection only and does not cover that.
+`task/T15-locked-waha-sender` is merged. T16 (exactly-once delivery and
+ambiguity recovery) is in progress on `task/T16-exactly-once-delivery`,
+not yet merged, executed via `superpowers:subagent-driven-development`
+against `docs/superpowers/plans/2026-08-09-t16-exactly-once-delivery.md`
+(ledger: `.superpowers/sdd/2026-08-09-t16-exactly-once-delivery/progress.md`
+in that branch's worktree). 11 of 13 plan tasks are complete and
+independently reviewed clean (database schema/migrations, `sender.py`
+reconciliation, `delivery.py`'s `run_daily_send` orchestrator covering
+crash/restart/retry/reconciliation across every delivery state, and the
+DAILY_SEND window gate). Task 12 (the done-when-gate fault-injection
+suite, `tests/e2e/test_delivery_fault_injection.py`) is in progress: an
+independent review found a real gap (a reconciliation-window
+false-positive plus a near-tautological assertion, both letting the
+suite falsely appear to prove no-duplicate-sends); a fix is implemented
+and passes everything that doesn't require WAHA (fast suite, mypy,
+ruff), but the real WAHA session is currently logged out and refusing
+re-pairing, so the fix is not yet live-verified and has not had its
+required independent review completed -- both are blocked until WAHA
+reconnects. Task 13 has not started. T16 is on the plan's mandatory
+independent-security-review list (T06, T15, T16, T17, T18) and still
+needs its own whole-branch review before merge, on top of Task 12's
+review. T16 is what actually persists WAHA message identifiers and
+attempt records for exactly-once delivery -- T15's `sender_auth_nonces`
+table is authentication-layer replay protection only and does not cover
+that.
