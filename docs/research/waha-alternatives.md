@@ -65,6 +65,7 @@ maintainer's bugs), not whether it exists.
 | Raw Baileys (no wrapper, write a thin custom service) | MIT | Same underlying risk as today (it *is* what WAHA-NOWEB wraps), plus ~1-2 days rebuilding session/reconnect/webhook handling WAHA already provides. Not a fix, just less abstraction to debug through. Also: a 2025-2026 npm supply-chain campaign shipped ~70 malicious packages impersonating Baileys forks (one, "lotusbail," had 56k+ downloads) that stole session credentials — pin only the canonical `@whiskeysockets/baileys` package if pursuing this. |
 | venom-bot / whatsapp-web.js used directly | Apache-2.0 | Libraries, not REST/webhook servers — would mean rebuilding the wrapper layer WAHA already provides. Deprioritized. |
 | mautrix-whatsapp | AGPL-3.0 | Wrong tool — a Matrix puppeting bridge requiring a full Matrix homeserver (Synapse + DB) to receive/send anything. Excluded on architecture grounds, not stability. |
+| **OpenWA** (`rmyndharis/OpenWA`, Node/TypeScript/NestJS) | MIT, no paid tier | Dual-engine, switchable per deployment via `ENGINE_TYPE`: `whatsapp-web.js` (Puppeteer, lower ban-risk, ~300–500MB RAM/session) or `baileys` (WebSocket, higher fingerprint risk, ~30–80MB RAM/session) — project publishes this trade-off table itself. Most explicit PTT contract found: `POST /api/sessions/:sessionId/messages/send-audio` with `ptt: true` → real voice-note bubble, `type: "voice"`. HMAC-signed webhooks. **Verified directly (2026-08-16):** MIT, 12,818 stars, 2,936 forks, 2,055 commits, 53 contributors, repo created 2026-02-02 (~6.5 months old), last push 2026-08-16, only 4 open issues. That star-to-issue ratio is unusual for a 6.5-month-old project — no evidence of impropriety found (real satellite repos, own domain, transparent compliance disclaimer in its own docs steering regulated use toward the official Cloud API instead), but also no multi-year issue trail like WAHA/Baileys/Evolution have, so it hasn't yet surfaced (or not) the session-logout failure class this note is about. Worth a parallel sandbox trial, not a first move for the production send. |
 | **Official Meta WhatsApp Business Platform (Cloud API)** | Official, not open source | Ban/restriction risk genuinely near-zero, and setup is cheaper than reputation suggests for one fixed recipient (a free test-number sandbox exists; no forced business verification or app review at this volume). **But structurally cannot do this project's job**: proactive daily messages outside a customer-initiated 24h window must go through a pre-approved template, and WhatsApp template headers do not support an audio/voice-note format (only TEXT/IMAGE/VIDEO/DOCUMENT/LOCATION, confirmed against three separate Meta doc pages). Likely cannot deliver a native voice-note bubble for this use case at all. |
 
 ## Recommendation
@@ -78,7 +79,27 @@ better-regarded session-longevity track record, without a migration.
 
 If GOWS still logs out and won't re-pair, that's a real signal to migrate off WAHA entirely, and
 **wuzapi** is the best-fit landing spot — closest to what `sender.py` already expects structurally
-(audio-send endpoint + webhooks, MIT, single binary, actively maintained).
+(audio-send endpoint + webhooks, MIT, single binary, actively maintained). **OpenWA** is a reasonable
+parallel sandbox candidate (its per-deployment Baileys/whatsapp-web.js choice is genuinely useful for
+isolating whether the failure is engine-specific), but its 6.5-month track record on this exact
+failure class is unproven either way — don't make it the first move for the production send.
+
+**Result, real-world (2026-08-16):** GOWS was tried. Same WAHA container, `WHATSAPP_DEFAULT_ENGINE=GOWS`,
+confirmed genuinely running (`engine.gows.found/connected: true` in the API response, not just the
+image tag), fresh session, reached `SCAN_QR_CODE`. Scanned ~50 minutes later: refused with the
+identical "can't link new device" error, session confirmed `FAILED`. This revises the recommendation
+above: **wuzapi is now a low-value next step**, not the best-fit landing spot the original reasoning
+suggested — it shares GOWS's exact `whatsmeow` engine, so a refusal there would almost certainly
+reproduce this same result through a different wrapper around the same already-tested protocol
+implementation, not add new information. The one mechanism now worth testing before treating this as
+conclusively account-wide is **OpenWA in its `whatsapp-web.js` mode specifically** (not its `baileys`
+mode, which shares NOWEB's already-failed engine) — a real headless-browser session automating the
+actual WhatsApp Web site is architecturally distinct from both WebSocket-protocol reimplementations
+(Baileys, whatsmeow) now tested, and may receive different treatment from whatever is enforcing this
+throttle. Two properly-spaced NOWEB attempts (2026-08-12, 2026-08-15) plus this GOWS attempt
+(2026-08-16) are now three refusals across two distinct protocol families on the same account — see
+`.superpowers/sdd/2026-08-09-t16-exactly-once-delivery/progress.md` in the T16 worktree for the full
+attempt-by-attempt record.
 
 ## Sourcing caveats
 
