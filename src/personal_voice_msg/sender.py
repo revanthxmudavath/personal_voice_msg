@@ -156,8 +156,15 @@ async def send_voice_note(
             timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
             allow_redirects=False,
         ) as response:
-            if response.status >= 400:
+            # A 4xx is WAHA giving a definite answer (safe to retry
+            # immediately); a 5xx is not -- WAHA could have dispatched the
+            # media before erroring internally, so it must be reconciled
+            # before any retry, same as a timeout or malformed response
+            # (T16 Task 13 fix, finding F3).
+            if 400 <= response.status < 500:
                 raise SenderRejected("WAHA send request failed")
+            if response.status >= 500:
+                raise SenderAmbiguous("WAHA send request failed")
             chunks: list[bytes] = []
             total = 0
             async for chunk in response.content.iter_chunked(RESPONSE_CHUNK_BYTES):

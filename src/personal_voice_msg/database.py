@@ -1243,6 +1243,52 @@ class Database:
             raise RecordNotFound("delivery does not exist")
         return MessageState(row[0])
 
+    def get_delivery_updated_at(self, delivery_id: int) -> datetime:
+        """Return ``deliveries.updated_at`` -- the timestamp of this
+        delivery's most recent committed state transition.
+
+        Used by the ``DELIVERY_UNKNOWN`` reconciliation path (T16 Task 13
+        fix, finding F2) as the reconciliation window start. That window
+        must anchor to when the delivery actually entered ``SENDING``,
+        not to whatever real wall-clock instant later discovered it there
+        after a crash -- see ``delivery.py``'s ``SENDING``-on-entry branch,
+        which stamps its crash-recovery ``DELIVERY_UNKNOWN`` attempt with
+        this same value (captured before the transition) instead of the
+        restart's own ``now``, so this column keeps reflecting the
+        original ``SENDING``-entry instant through that transition.
+        """
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT updated_at FROM deliveries WHERE id = ?",
+                (delivery_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise RecordNotFound("delivery does not exist")
+        return datetime.fromisoformat(str(row[0]))
+
+    def get_delivery_message_id(self, delivery_id: int) -> int:
+        """Return the ``message_id`` a delivery is associated with.
+
+        Used by ``run_daily_send`` (T16 Task 13 fix, finding F4) to read
+        the delivery's own bound message text from the database instead
+        of trusting a caller-supplied string, when resuming an existing
+        delivery that has no fresh ``Reservation`` this call.
+        """
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT message_id FROM deliveries WHERE id = ?",
+                (delivery_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise RecordNotFound("delivery does not exist")
+        return int(row[0])
+
     def get_latest_attempt_time(self, delivery_id: int) -> datetime:
         """Return the ``attempted_at`` of the most recent recorded attempt.
 

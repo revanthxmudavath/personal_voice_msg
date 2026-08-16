@@ -73,6 +73,61 @@ def hanging_server() -> _HangingServer:
     server.stop()
 
 
+class _FixedStatusServer:
+    """Accepts one connection, drains whatever the client sends until it
+    goes quiet, then responds with a fixed HTTP status line and closes --
+    a real raw socket, no aiohttp/WAHA server semantics beyond the status
+    line itself. Used to force a real, definite HTTP response (not a
+    mock) for exercising send_voice_note's status-code handling."""
+
+    def __init__(self, status_line: str) -> None:
+        self._status_line = status_line
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._socket.bind(("127.0.0.1", 0))
+        self._socket.listen(1)
+        self.port = self._socket.getsockname()[1]
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._accept_and_respond, daemon=True)
+        self._thread.start()
+
+    def _accept_and_respond(self) -> None:
+        self._socket.settimeout(1.0)
+        while not self._stop.is_set():
+            try:
+                connection, _ = self._socket.accept()
+            except TimeoutError:
+                continue
+            try:
+                connection.settimeout(2.0)
+                try:
+                    while connection.recv(65_536):
+                        pass
+                except (TimeoutError, OSError):
+                    pass
+                body = b"{}"
+                response = (
+                    f"{self._status_line}\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    "Connection: close\r\n\r\n"
+                ).encode() + body
+                connection.sendall(response)
+            finally:
+                connection.close()
+            return
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._socket.close()
+
+
+@pytest.fixture
+def server_500() -> _FixedStatusServer:
+    server = _FixedStatusServer("HTTP/1.1 500 Internal Server Error")
+    yield server
+    server.stop()
+
+
 @pytest.fixture(scope="module")
 def valid_audio_bytes(tmp_path_factory: pytest.TempPathFactory) -> bytes:
     """Real Pocket TTS synthesis + real FFmpeg conversion, once per module.
@@ -119,6 +174,42 @@ def test_a_hanging_connection_raises_sender_ambiguous_not_rejected(
     database.migrate()
     now = datetime.now(UTC)
     idempotency_key = f"t16-ambiguous-{now.timestamp()}"
+    timestamp = int(now.timestamp())
+    signature = sign_request(
+        settings.sender_auth_key.reveal().encode(), idempotency_key, timestamp
+    )
+
+    async def send() -> str:
+        async with aiohttp.ClientSession() as session:
+            return await send_voice_note(
+                session,
+                database,
+                settings,
+                valid_audio_bytes,
+                idempotency_key,
+                timestamp,
+                signature,
+                now,
+            )
+
+    with pytest.raises(SenderAmbiguous):
+        asyncio.run(send())
+
+
+def test_a_5xx_response_raises_sender_ambiguous_not_rejected(
+    server_500: _FixedStatusServer, valid_audio_bytes: bytes, tmp_path: Path
+) -> None:
+    """T16 Task 13 fix, finding F3: WAHA could have dispatched the media
+    before erroring internally on a 5xx, so it must be reconciled before
+    any retry -- unlike a 4xx, which is a definite answer. See
+    SenderRejected/SenderAmbiguous docstrings and
+    docs/superpowers/specs/2026-08-09-t16-exactly-once-delivery-design.md.
+    """
+    settings = _settings_for(server_500.port, tmp_path)
+    database = Database(tmp_path / "state.sqlite3")
+    database.migrate()
+    now = datetime.now(UTC)
+    idempotency_key = f"t16-ambiguous-5xx-{now.timestamp()}"
     timestamp = int(now.timestamp())
     signature = sign_request(
         settings.sender_auth_key.reveal().encode(), idempotency_key, timestamp

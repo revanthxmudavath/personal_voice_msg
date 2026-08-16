@@ -274,7 +274,7 @@ def test_a_paused_waha_container_produces_delivery_unknown_not_a_duplicate(
             async with aiohttp.ClientSession() as session:
                 return await run_daily_send(
                     database, settings, session, "recipient_t16_fault",
-                    PACIFIC_DATE, embedding_path, text, now,
+                    PACIFIC_DATE, embedding_path, now,
                 )
 
         result = asyncio.run(run())
@@ -306,7 +306,7 @@ def test_a_paused_waha_container_produces_delivery_unknown_not_a_duplicate(
         async with aiohttp.ClientSession() as session:
             return await run_daily_send(
                 database, settings, session, "recipient_t16_fault",
-                PACIFIC_DATE, embedding_path, text, step_now,
+                PACIFIC_DATE, embedding_path, step_now,
             )
 
     while step_now <= deadline:
@@ -401,7 +401,7 @@ def test_restart_at_every_delivery_state_never_duplicates_a_send(
             return await run_daily_send(
                 resumed_database, settings, session,
                 recipient_key,
-                PACIFIC_DATE, embedding_path, text, step_now,
+                PACIFIC_DATE, embedding_path, step_now,
             )
 
     result = asyncio.run(resume(now))

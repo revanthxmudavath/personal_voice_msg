@@ -98,7 +98,7 @@ def test_run_daily_send_reaches_sent_from_a_queued_message(
         async with aiohttp.ClientSession() as session:
             return await run_daily_send(
                 database, settings, session, "recipient_t16_e2e",
-                PACIFIC_DATE, embedding_path, text, now,
+                PACIFIC_DATE, embedding_path, now,
             )
 
     result = asyncio.run(run())
@@ -140,7 +140,7 @@ def test_run_daily_send_retries_a_failed_delivery_reusing_stored_audio(
         async with aiohttp.ClientSession() as session:
             return await run_daily_send(
                 database, settings, session, "recipient_t16_retry",
-                PACIFIC_DATE, embedding_path, text, now,
+                PACIFIC_DATE, embedding_path, now,
             )
 
     result = asyncio.run(run())
@@ -182,7 +182,7 @@ def test_run_daily_send_reclassifies_orphaned_sending_as_delivery_unknown(
         async with aiohttp.ClientSession() as session:
             return await run_daily_send(
                 database, settings, session, "recipient_t16_orphan",
-                PACIFIC_DATE, settings.voice_embedding.reveal(), text, now,
+                PACIFIC_DATE, settings.voice_embedding.reveal(), now,
             )
 
     result = asyncio.run(run())
