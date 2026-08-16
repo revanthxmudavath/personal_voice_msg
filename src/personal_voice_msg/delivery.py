@@ -31,7 +31,6 @@ async def run_daily_send(
     recipient_key: str,
     pacific_date: date,
     embedding_path: Path,
-    text: str,
     now: datetime,
 ) -> MessageState:
     """Advance today's delivery by one orchestration step from wherever it
@@ -51,20 +50,32 @@ async def run_daily_send(
     reservation = database.reserve_next_message(recipient_key, pacific_date, now)
     if reservation is not None:
         delivery_id = reservation.delivery_id
+        message_id = reservation.message_id
         state = reservation.state
     else:
         existing_id = database.get_delivery_for_date(recipient_key, pacific_date)
         if existing_id is None:
             return MessageState.QUEUED  # nothing reserved, nothing queued
         delivery_id = existing_id
+        message_id = database.get_delivery_message_id(delivery_id)
         state = database.get_delivery_state(delivery_id)
 
     if state is MessageState.SENDING:
         # This process did not just set SENDING itself in this call --
         # a prior attempt (possibly a crashed process) may or may not
         # have reached WAHA. Reclassify as ambiguous rather than guessing.
+        # Stamp this attempt with the delivery's own SENDING-entry time
+        # (durably recorded as deliveries.updated_at by the
+        # AUDIO_READY -> SENDING transition, captured here before this
+        # call overwrites it) rather than this restart's real invocation
+        # time -- otherwise the DELIVERY_UNKNOWN branch below would later
+        # anchor its reconciliation window to the restart instant, after
+        # any real WhatsApp message the crashed process's send may have
+        # actually produced, and could never find it (T16 Task 13 fix,
+        # finding F2).
+        sending_started_at = database.get_delivery_updated_at(delivery_id)
         database.record_delivery_attempt(
-            delivery_id, MessageState.DELIVERY_UNKNOWN, now
+            delivery_id, MessageState.DELIVERY_UNKNOWN, sending_started_at
         )
         return MessageState.DELIVERY_UNKNOWN
 
@@ -73,20 +84,26 @@ async def run_daily_send(
         state = MessageState.AUDIO_READY
 
     if state is MessageState.DELIVERY_UNKNOWN:
-        latest_attempt_at = database.get_latest_attempt_time(delivery_id)
+        window_start = database.get_delivery_updated_at(delivery_id)
         outcome, provider_message_id = await reconcile_delivery(
-            session, settings, latest_attempt_at, now
+            session, settings, window_start, now
         )
         if outcome is MessageState.DELIVERY_UNKNOWN:
             return MessageState.DELIVERY_UNKNOWN  # still inconclusive
-        database.record_delivery_attempt(
-            delivery_id, outcome, now, provider_message_id=provider_message_id
-        )
         if outcome is MessageState.SENT:
+            database.record_delivery_attempt(
+                delivery_id, outcome, now, provider_message_id=provider_message_id
+            )
             return MessageState.SENT
+        # outcome is AUDIO_READY: reconciliation concluded, conclusively,
+        # that nothing was ever sent. AUDIO_READY is not a valid
+        # delivery_attempts outcome (see database.py's _ATTEMPT_OUTCOMES),
+        # so this is a plain state transition, not an attempt record.
+        database.transition_delivery(delivery_id, MessageState.AUDIO_READY, now)
         state = MessageState.AUDIO_READY
 
     if state is MessageState.RESERVED:
+        text = database.get_message_text(message_id)
         temp_destination = Path(tempfile.gettempdir()) / f"t16-{delivery_id}.ogg"
         produce_voice_note(
             database, delivery_id, embedding_path, text, temp_destination, now
