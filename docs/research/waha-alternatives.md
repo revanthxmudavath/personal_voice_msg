@@ -101,6 +101,30 @@ throttle. Two properly-spaced NOWEB attempts (2026-08-12, 2026-08-15) plus this 
 `.superpowers/sdd/2026-08-09-t16-exactly-once-delivery/progress.md` in the T16 worktree for the full
 attempt-by-attempt record.
 
+**Result, real-world (2026-08-16, same day): both OpenWA and WPPConnect Server were tried, in an
+isolated sandbox worktree, never wired into production code.** OpenWA ran with
+`ENGINE_TYPE=whatsapp-web.js`, `MCP_ENABLED=false`, no Docker-socket mount (confirmed disabled in its
+own boot log). WPPConnect Server ran its own default `whatsapp-web.js`-based engine. Both reached
+QR-ready independently; both were scanned and refused with the identical "can't link new device"
+error. Confirmed via each tool's own logs, not just the scan report: WPPConnect logged an explicit
+`qrReadError` / "Failed to authenticate" / "Auto Close Called" after a 60s window; OpenWA never
+reached a connected state and kept silently regenerating a fresh QR roughly every 20–60s for the full
+~6 minutes observed — WhatsApp's server never completed the pairing handshake regardless of how many
+times the client requested a new code. Both sandboxes were fully torn down (containers, volumes,
+images) immediately after, per the experiment's own design.
+
+**This is decisive.** Four architecturally distinct implementations — Baileys (NOWEB), whatsmeow
+(GOWS), and whatsapp-web.js via two independent server wrappers (OpenWA, WPPConnect Server) — across
+5 total real linking attempts on this account, all refused identically. This exhausts essentially the
+entire practical design space of self-hosted "link this account as a WhatsApp Web device" approaches:
+every other option in the table above (raw Baileys, venom-bot, Evolution API, GOWA) reuses one of the
+two already-tested underlying libraries (Baileys or whatsmeow), so none would add new information.
+**The evidence now strongly supports this being WhatsApp's own account-level device-linking
+throttle/restriction, not an implementation-specific bug.** Further self-hosted WhatsApp-Web
+experiments on this account are not recommended — see this plan's ledger
+(`.superpowers/sdd/2026-08-09-t16-exactly-once-delivery/progress.md`) for the full record and next
+steps under discussion (a different account/number, or a non-WhatsApp-Web platform such as Telegram).
+
 ## Sourcing caveats
 
 Reddit (reddit.com, old.reddit.com, `site:reddit.com` queries) was fully blocked to the research
