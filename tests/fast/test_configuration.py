@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import traceback
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from personal_voice_msg.config import (
     RuntimeProfile,
     load_settings,
 )
+from personal_voice_msg.redaction import REDACTED
 
 REQUIRED_SETTINGS = {
     "profile",
@@ -220,16 +222,21 @@ def test_deployed_profile_rejects_secret_root_elsewhere_inside_project(
     tmp_path: Path,
 ) -> None:
     config_path, values, _ = create_configuration(tmp_path, profile="staging")
-    project_marker = Path(values["secret_root"]).parent.parent / ".git"
-    project_marker.mkdir(exist_ok=True)
-    try:
-        nested_root = Path(values["secret_root"]).parent
-        values["secret_root"] = str(nested_root.resolve())
-        write_toml(config_path, values)
-        with pytest.raises(ConfigurationError):
-            load_settings(config_path)
-    finally:
-        project_marker.rmdir()
+    original_secret_root = Path(values["secret_root"])
+    nested_root = config_path.parent / "nested-secrets"
+    nested_root.mkdir()
+    for filename in (
+        values["telegram_chat_id_file"],
+        values["telegram_bot_token_file"],
+        values["voice_embedding_file"],
+        values["sender_auth_key_file"],
+    ):
+        shutil.copy(original_secret_root / filename, nested_root / filename)
+    values["secret_root"] = str(nested_root.resolve())
+    write_toml(config_path, values)
+
+    with pytest.raises(ConfigurationError, match="project"):
+        load_settings(config_path)
 
 
 @pytest.mark.fast
@@ -294,12 +301,19 @@ def test_sensitive_values_use_redacting_wrappers_and_do_not_leak_to_logs(
 
     for value in (
         settings.telegram_bot_token,
-        str(settings.telegram_chat_id.reveal()),
+        settings.telegram_chat_id,
         settings.voice_embedding,
         settings.sender_auth_key,
     ):
-        rendered = str(value)
-        assert "***" in rendered or redactor.redact(rendered) != rendered or True
+        assert str(value) == REDACTED
+        assert repr(value) == REDACTED
+
+    assert sensitive["token"] not in str(settings)
+    assert str(sensitive["chat_id"]) not in str(settings)
+    assert sensitive["sender_auth_key"] not in str(settings)
+    assert sensitive["token"] not in repr(settings)
+    assert str(sensitive["chat_id"]) not in repr(settings)
+    assert sensitive["sender_auth_key"] not in repr(settings)
 
     with caplog.at_level(logging.INFO):
         logging.getLogger(__name__).info(
