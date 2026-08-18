@@ -96,7 +96,6 @@ uv run pytest -m security
 uv run ruff check .
 uv run mypy src
 uv run python scripts/repository_policy.py all --root .
-docker compose config --quiet
 ```
 
 `live` and `e2e` suites are opt-in and must never target production
