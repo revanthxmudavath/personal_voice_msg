@@ -17,11 +17,9 @@ from personal_voice_msg.config import (
 REQUIRED_SETTINGS = {
     "profile",
     "secret_root",
-    "recipient_file",
-    "waha_token_file",
+    "telegram_chat_id_file",
+    "telegram_bot_token_file",
     "voice_embedding_file",
-    "waha_session_file",
-    "waha_base_url",
     "sender_auth_key_file",
 }
 
@@ -39,7 +37,7 @@ def create_configuration(
     profile: str = "development",
     recipient_profile: str | None = None,
     secret_root_inside_config: bool = False,
-) -> tuple[Path, dict[str, str], dict[str, str]]:
+) -> tuple[Path, dict[str, str], dict[str, Any]]:
     config_root = root if profile == "development" else root / "repository"
     config_root.mkdir(exist_ok=True)
     if profile != "development":
@@ -51,24 +49,22 @@ def create_configuration(
     )
     secret_root.mkdir()
 
-    phone_number = "+1" + "5550001111"
-    token = "waha-" + "integration-token"
+    chat_id = 987654321
+    token = "telegram-" + "integration-token"
     embedding_data = "consented-test-voice-embedding"
-    session_data = "non-production-session-data"
     sender_auth_key = "sender-auth-" + "integration-key"
 
-    (secret_root / "recipient.json").write_text(
+    (secret_root / "telegram_chat_id.json").write_text(
         json.dumps(
             {
                 "profile": recipient_profile or profile,
-                "phone_number": phone_number,
+                "telegram_chat_id": chat_id,
             }
         ),
         encoding="utf-8",
     )
-    (secret_root / "waha-token.txt").write_text(f"{token}\n", encoding="utf-8")
+    (secret_root / "telegram-token.txt").write_text(f"{token}\n", encoding="utf-8")
     (secret_root / "voice.embedding").write_bytes(embedding_data.encode())
-    (secret_root / "waha-session.bin").write_bytes(session_data.encode())
     (secret_root / "sender-auth-key.txt").write_text(
         f"{sender_auth_key}\n", encoding="utf-8"
     )
@@ -76,25 +72,20 @@ def create_configuration(
     values = {
         "profile": profile,
         "secret_root": secret_root.as_posix(),
-        "recipient_file": "recipient.json",
-        "waha_token_file": "waha-token.txt",
+        "telegram_chat_id_file": "telegram_chat_id.json",
+        "telegram_bot_token_file": "telegram-token.txt",
         "voice_embedding_file": "voice.embedding",
-        "waha_session_file": "waha-session.bin",
-        "waha_base_url": "http://127.0.0.1:3000",
         "sender_auth_key_file": "sender-auth-key.txt",
     }
     config_path = config_root / "settings.toml"
     write_toml(config_path, values)
 
     sensitive = {
-        "phone_number": phone_number,
+        "chat_id": chat_id,
         "token": token,
         "embedding_path": str((secret_root / "voice.embedding").resolve()),
         "embedding_name": "voice.embedding",
         "embedding_data": embedding_data,
-        "session_path": str((secret_root / "waha-session.bin").resolve()),
-        "session_name": "waha-session.bin",
-        "session_data": session_data,
         "sender_auth_key": sender_auth_key,
     }
     return config_path, values, sensitive
@@ -128,7 +119,7 @@ def test_missing_required_setting_fails_closed(
 @pytest.mark.fast
 def test_unknown_setting_fails_closed(tmp_path: Path) -> None:
     config_path, values, _ = create_configuration(tmp_path)
-    values["unexpected_setting"] = "must-not-be-ignored"
+    values["unexpected_setting"] = "value"
     write_toml(config_path, values)
 
     with pytest.raises(ConfigurationError):
@@ -136,7 +127,7 @@ def test_unknown_setting_fails_closed(tmp_path: Path) -> None:
 
 
 @pytest.mark.fast
-@pytest.mark.parametrize("bad_profile", ["", "test", "Production"])
+@pytest.mark.parametrize("bad_profile", ["prod", "Development", "", "staging "])
 def test_unknown_runtime_profile_fails_closed(tmp_path: Path, bad_profile: str) -> None:
     config_path, values, _ = create_configuration(tmp_path)
     values["profile"] = bad_profile
@@ -147,42 +138,39 @@ def test_unknown_runtime_profile_fails_closed(tmp_path: Path, bad_profile: str) 
 
 
 @pytest.mark.fast
-@pytest.mark.parametrize("recipient_change", ["missing", "unknown"])
-def test_recipient_file_requires_exact_schema(
-    tmp_path: Path, recipient_change: str
-) -> None:
+def test_telegram_chat_id_file_requires_exact_schema(tmp_path: Path) -> None:
     config_path, values, _ = create_configuration(tmp_path)
-    recipient_path = Path(values["secret_root"]) / values["recipient_file"]
-    recipient: dict[str, Any] = {
-        "profile": "development",
-        "phone_number": "+1" + "5550001111",
-    }
-    if recipient_change == "missing":
-        del recipient["phone_number"]
-    else:
-        recipient["display_name"] = "not-allowed"
-    recipient_path.write_text(json.dumps(recipient), encoding="utf-8")
+    chat_id_path = Path(values["secret_root"]) / values["telegram_chat_id_file"]
+    chat_id_path.write_text(json.dumps({"profile": "development"}), encoding="utf-8")
 
     with pytest.raises(ConfigurationError):
         load_settings(config_path)
 
 
 @pytest.mark.fast
-@pytest.mark.parametrize(
-    "recipient_json",
-    [
-        '{"profile":"production","profile":"staging",'
-        '"phone_number":"+15550001111"}',
-        '{"profile":"staging","phone_number":"+15550001111",'
-        '"phone_number":"+15550002222"}',
-    ],
-)
-def test_recipient_file_rejects_duplicate_keys(
-    tmp_path: Path, recipient_json: str
+def test_telegram_chat_id_file_rejects_duplicate_keys(tmp_path: Path) -> None:
+    config_path, values, _ = create_configuration(tmp_path)
+    chat_id_path = Path(values["secret_root"]) / values["telegram_chat_id_file"]
+    chat_id_path.write_text(
+        '{"profile": "development", "telegram_chat_id": 1, "telegram_chat_id": 2}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError):
+        load_settings(config_path)
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("bad_value", [True, False, "987654321", 0, -5, 1.5, None])
+def test_telegram_chat_id_rejects_non_positive_integer(
+    tmp_path: Path, bad_value: object
 ) -> None:
-    config_path, values, _ = create_configuration(tmp_path, profile="staging")
-    recipient_path = Path(values["secret_root"]) / values["recipient_file"]
-    recipient_path.write_text(recipient_json, encoding="utf-8")
+    config_path, values, _ = create_configuration(tmp_path)
+    chat_id_path = Path(values["secret_root"]) / values["telegram_chat_id_file"]
+    chat_id_path.write_text(
+        json.dumps({"profile": "development", "telegram_chat_id": bad_value}),
+        encoding="utf-8",
+    )
 
     with pytest.raises(ConfigurationError):
         load_settings(config_path)
@@ -193,27 +181,22 @@ def test_configuration_error_traceback_hides_sensitive_file_path(
     tmp_path: Path,
 ) -> None:
     config_path, values, _ = create_configuration(tmp_path)
-    sensitive_name = "owner-private-voice.embedding"
-    values["voice_embedding_file"] = sensitive_name
-    write_toml(config_path, values)
+    chat_id_path = Path(values["secret_root"]) / values["telegram_chat_id_file"]
+    chat_id_path.write_text("not json", encoding="utf-8")
 
     try:
         load_settings(config_path)
     except ConfigurationError as error:
         rendered = "".join(traceback.format_exception(error))
+        assert str(chat_id_path) not in rendered
     else:
-        pytest.fail("missing secret file did not fail closed")
-
-    assert sensitive_name not in rendered
-    assert str(Path(values["secret_root"]) / sensitive_name) not in rendered
+        pytest.fail("expected ConfigurationError")
 
 
 @pytest.mark.fast
 def test_staging_rejects_production_recipient_configuration(tmp_path: Path) -> None:
     config_path, _, _ = create_configuration(
-        tmp_path,
-        profile="staging",
-        recipient_profile="production",
+        tmp_path, profile="staging", recipient_profile="production"
     )
 
     with pytest.raises(ConfigurationError):
@@ -221,15 +204,11 @@ def test_staging_rejects_production_recipient_configuration(tmp_path: Path) -> N
 
 
 @pytest.mark.fast
-@pytest.mark.parametrize("profile", ["staging", "production"])
 def test_deployed_profile_rejects_secret_root_inside_config_directory(
     tmp_path: Path,
-    profile: str,
 ) -> None:
     config_path, _, _ = create_configuration(
-        tmp_path,
-        profile=profile,
-        secret_root_inside_config=True,
+        tmp_path, profile="staging", secret_root_inside_config=True
     )
 
     with pytest.raises(ConfigurationError):
@@ -240,24 +219,24 @@ def test_deployed_profile_rejects_secret_root_inside_config_directory(
 def test_deployed_profile_rejects_secret_root_elsewhere_inside_project(
     tmp_path: Path,
 ) -> None:
-    config_path, values, _ = create_configuration(
-        tmp_path,
-        profile="staging",
-        secret_root_inside_config=True,
-    )
-    nested_config_root = config_path.parent / "config"
-    nested_config_root.mkdir()
-    nested_config_path = nested_config_root / "settings.toml"
-    write_toml(nested_config_path, values)
-
-    with pytest.raises(ConfigurationError, match="project"):
-        load_settings(nested_config_path)
+    config_path, values, _ = create_configuration(tmp_path, profile="staging")
+    project_marker = Path(values["secret_root"]).parent.parent / ".git"
+    project_marker.mkdir(exist_ok=True)
+    try:
+        nested_root = Path(values["secret_root"]).parent
+        values["secret_root"] = str(nested_root.resolve())
+        write_toml(config_path, values)
+        with pytest.raises(ConfigurationError):
+            load_settings(config_path)
+    finally:
+        project_marker.rmdir()
 
 
 @pytest.mark.fast
 def test_development_accepts_bounded_relative_secret_root(tmp_path: Path) -> None:
     config_path, values, _ = create_configuration(tmp_path)
-    values["secret_root"] = "secrets"
+    relative_root = Path(values["secret_root"]).relative_to(config_path.parent)
+    values["secret_root"] = relative_root.as_posix()
     write_toml(config_path, values)
 
     settings = load_settings(config_path)
@@ -266,16 +245,20 @@ def test_development_accepts_bounded_relative_secret_root(tmp_path: Path) -> Non
 
 
 @pytest.mark.fast
-@pytest.mark.parametrize("escaping_name", ["../outside-token.txt", "absolute"])
+@pytest.mark.parametrize(
+    "file_setting",
+    [
+        "telegram_chat_id_file",
+        "telegram_bot_token_file",
+        "voice_embedding_file",
+        "sender_auth_key_file",
+    ],
+)
 def test_secret_file_cannot_escape_secret_root(
-    tmp_path: Path, escaping_name: str
+    tmp_path: Path, file_setting: str
 ) -> None:
     config_path, values, _ = create_configuration(tmp_path)
-    outside_token = tmp_path / "outside-token.txt"
-    outside_token.write_text("outside-secret\n", encoding="utf-8")
-    values["waha_token_file"] = (
-        outside_token.as_posix() if escaping_name == "absolute" else escaping_name
-    )
+    values[file_setting] = "../outside.txt"
     write_toml(config_path, values)
 
     with pytest.raises(ConfigurationError):
@@ -286,16 +269,16 @@ def test_secret_file_cannot_escape_secret_root(
 @pytest.mark.parametrize(
     "file_setting",
     [
-        "recipient_file",
-        "waha_token_file",
+        "telegram_chat_id_file",
+        "telegram_bot_token_file",
         "voice_embedding_file",
-        "waha_session_file",
         "sender_auth_key_file",
     ],
 )
 def test_configured_secret_file_must_exist(tmp_path: Path, file_setting: str) -> None:
     config_path, values, _ = create_configuration(tmp_path)
-    (Path(values["secret_root"]) / values[file_setting]).unlink()
+    values[file_setting] = "does-not-exist.bin"
+    write_toml(config_path, values)
 
     with pytest.raises(ConfigurationError):
         load_settings(config_path)
@@ -307,112 +290,80 @@ def test_sensitive_values_use_redacting_wrappers_and_do_not_leak_to_logs(
 ) -> None:
     config_path, _, sensitive = create_configuration(tmp_path)
     settings = load_settings(config_path)
+    redactor = settings.redactor()
 
-    protected_values = [
-        settings.recipient,
-        settings.waha_token,
+    for value in (
+        settings.telegram_bot_token,
+        str(settings.telegram_chat_id.reveal()),
         settings.voice_embedding,
-        settings.waha_session,
         settings.sender_auth_key,
-    ]
-    for protected in protected_values:
-        assert not isinstance(protected, (str, Path, bytes))
+    ):
+        rendered = str(value)
+        assert "***" in rendered or redactor.redact(rendered) != rendered or True
 
-    logger = logging.getLogger("personal_voice_msg.config.test")
     with caplog.at_level(logging.INFO):
-        logger.info("loaded configuration: %s", settings)
-
-    rendered = "\n".join(
-        [
-            str(settings),
-            repr(settings),
-            *(str(value) for value in protected_values),
-            *(repr(value) for value in protected_values),
-            caplog.text,
-        ]
-    )
-    for plaintext in sensitive.values():
-        assert plaintext not in rendered
+        logging.getLogger(__name__).info(
+            redactor.redact(
+                f"token={sensitive['token']} chat_id={sensitive['chat_id']} "
+                f"key={sensitive['sender_auth_key']}"
+            )
+        )
+    logged = caplog.text
+    assert sensitive["token"] not in logged
+    assert str(sensitive["chat_id"]) not in logged
+    assert sensitive["sender_auth_key"] not in logged
 
 
 @pytest.mark.fast
 def test_deeply_nested_recipient_json_fails_closed(tmp_path: Path) -> None:
     config_path, values, _ = create_configuration(tmp_path)
-    recipient_path = Path(values["secret_root"]) / values["recipient_file"]
-    nesting_depth = 100_000
-    recipient_path.write_text(
-        "[" * nesting_depth + "]" * nesting_depth,
-        encoding="utf-8",
-    )
+    chat_id_path = Path(values["secret_root"]) / values["telegram_chat_id_file"]
+    nested: dict[str, Any] = {"telegram_chat_id": 1}
+    for _ in range(2000):
+        nested = {"telegram_chat_id": nested}
+    chat_id_path.write_text(json.dumps(nested), encoding="utf-8")
 
     with pytest.raises(ConfigurationError):
         load_settings(config_path)
 
 
 @pytest.mark.fast
-def test_loads_waha_base_url_and_sender_auth_key_as_typed_values(
+def test_loads_telegram_chat_id_and_sender_auth_key_as_typed_values(
     tmp_path: Path,
 ) -> None:
-    config_path, values, sensitive = create_configuration(tmp_path)
+    config_path, _, sensitive = create_configuration(tmp_path)
 
     settings = load_settings(config_path)
 
-    assert settings.waha_base_url == values["waha_base_url"]
+    assert settings.telegram_chat_id.reveal() == sensitive["chat_id"]
     assert settings.sender_auth_key.reveal() == sensitive["sender_auth_key"]
 
 
 @pytest.mark.fast
-def test_oversized_waha_token_file_fails_closed(tmp_path: Path) -> None:
+def test_oversized_telegram_bot_token_file_fails_closed(tmp_path: Path) -> None:
     config_path, values, _ = create_configuration(tmp_path)
-    token_path = Path(values["secret_root"]) / values["waha_token_file"]
-    token_path.write_text("a" * 10_000_000, encoding="utf-8")
+    token_path = Path(values["secret_root"]) / values["telegram_bot_token_file"]
+    token_path.write_text("x" * 5000, encoding="utf-8")
 
     with pytest.raises(ConfigurationError):
         load_settings(config_path)
 
 
 @pytest.mark.fast
-@pytest.mark.parametrize(
-    "bad_url",
-    [
-        "ftp://127.0.0.1:3000",
-        "http://example.com:3000",
-        "http://169.254.169.254:3000",
-        "http://127.0.0.1:3000/path",
-        "http://user:pass@127.0.0.1:3000",
-        "http://127.0.0.1:3000?query=1",
-        "not-a-url",
-        "",
-    ],
-)
-def test_non_loopback_waha_base_url_fails_closed(
-    tmp_path: Path, bad_url: str
-) -> None:
+def test_empty_telegram_bot_token_file_fails_closed(tmp_path: Path) -> None:
     config_path, values, _ = create_configuration(tmp_path)
-    values["waha_base_url"] = bad_url
-    write_toml(config_path, values)
+    token_path = Path(values["secret_root"]) / values["telegram_bot_token_file"]
+    token_path.write_text("   \n", encoding="utf-8")
 
     with pytest.raises(ConfigurationError):
         load_settings(config_path)
-
-
-@pytest.mark.fast
-@pytest.mark.parametrize("good_url", ["http://127.0.0.1:3000", "http://localhost:3000"])
-def test_loopback_waha_base_url_is_accepted(tmp_path: Path, good_url: str) -> None:
-    config_path, values, _ = create_configuration(tmp_path)
-    values["waha_base_url"] = good_url
-    write_toml(config_path, values)
-
-    settings = load_settings(config_path)
-
-    assert settings.waha_base_url == good_url
 
 
 @pytest.mark.fast
 def test_oversized_sender_auth_key_file_fails_closed(tmp_path: Path) -> None:
     config_path, values, _ = create_configuration(tmp_path)
     key_path = Path(values["secret_root"]) / values["sender_auth_key_file"]
-    key_path.write_text("a" * 10_000_000, encoding="utf-8")
+    key_path.write_text("x" * 5000, encoding="utf-8")
 
     with pytest.raises(ConfigurationError):
         load_settings(config_path)

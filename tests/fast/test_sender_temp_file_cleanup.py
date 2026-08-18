@@ -26,19 +26,17 @@ def new_database(tmp_path: Path) -> Database:
 def new_settings() -> Settings:
     """A real Settings value built directly, without a TOML file.
 
-    WAHA is never reached in this test -- the write failure below happens
+    Telegram sender is never reached in this test -- the write failure below happens
     before send_voice_note gets anywhere near audio validation or the
     network call, so these values only need to be well-typed, not real.
     """
 
     return Settings(
         profile=RuntimeProfile.DEVELOPMENT,
-        recipient=SensitiveValue("+15550000000"),
-        waha_token=SensitiveValue("unused-token"),
+        telegram_chat_id=SensitiveValue(987654321),
+        telegram_bot_token=SensitiveValue("test-token"),
         voice_embedding=SensitiveValue(Path("unused.safetensors")),
-        waha_session=SensitiveValue(Path("unused-session.bin")),
-        waha_base_url="http://127.0.0.1:3000",
-        sender_auth_key=SensitiveValue(KEY.decode()),
+        sender_auth_key=SensitiveValue("test-sender-auth-key"),
     )
 
 
