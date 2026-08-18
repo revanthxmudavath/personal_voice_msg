@@ -27,11 +27,19 @@ from personal_voice_msg.sender import (
     RESPONSE_CHUNK_BYTES,
 )
 
-# T16b: reconciliation system removed for Telegram migration.
-# These constants were part of WAHA-specific reconciliation logic.
-# This test file is now WAHA-only and will skip when WAHA environment
-# variables are not set. The constants below are kept for reference but
-# the file should be deprecated or rewritten for Telegram.
+# T16b WARNING: this entire file is in a known-inconsistent, collection-
+# only-patched state as of Task 4, not a working test suite. Its test
+# bodies still assume DELIVERY_UNKNOWN eventually resolves to SENT via
+# WAHA chat-history reconciliation -- Task 4 made that assumption false
+# (DELIVERY_UNKNOWN is now terminal for the Pacific day, see delivery.py).
+# The verification helper below also references settings.waha_base_url,
+# a field Task 1 removed from Settings entirely -- that code path is
+# currently dead only because this whole file is WAHA-gated (WAHA is
+# confirmed permanently unreachable for this migration, see
+# docs/research/waha-alternatives.md), not because it was fixed.
+# This file gets a full rewrite in Task 7
+# (docs/superpowers/plans/2026-08-19-t16b-telegram-sender-migration.md) --
+# do not trust or run anything in this file until then.
 RECONCILE_MAX_RESPONSE_BYTES = 65_536
 RECONCILE_MESSAGE_LIMIT = 100
 WAHA_SESSION_NAME = "default"
