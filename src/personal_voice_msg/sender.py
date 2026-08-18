@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import base64
 import hashlib
 import hmac
 import json
@@ -13,47 +11,25 @@ import aiohttp
 
 from personal_voice_msg.audio_pipeline import AudioPipelineError, validate_audio
 from personal_voice_msg.config import Settings
-from personal_voice_msg.database import Database, MessageState, ReplayDetected
+from personal_voice_msg.database import Database, ReplayDetected
 
 # How long a signed sender request stays acceptable. Generous enough for
-# real HTTP latency against a real WAHA container in integration/e2e tests,
+# real HTTP latency against Telegram's API in integration/e2e tests,
 # still bounded -- see docs/task-logs/T15.md.
 REPLAY_WINDOW_SECONDS = 300
-# T15 sends through a single fixed WAHA session; the sender never accepts a
-# caller-supplied session name.
-WAHA_SESSION_NAME = "default"
+TELEGRAM_API_BASE = "https://api.telegram.org"
 REQUEST_TIMEOUT_SECONDS = 30.0
 MAX_RESPONSE_BYTES = 65_536
 RESPONSE_CHUNK_BYTES = 8_192
-# How many of the most recent chat messages reconcile_delivery inspects.
-# Generous enough to cover normal chat traffic between reconciliation
-# attempts, small enough to keep the request/response cheap.
-RECONCILE_MESSAGE_LIMIT = 20
-# Chat history responses carry a lot more per-message data than sendVoice's
-# reply (WhatsApp protocol internals under "_data"), so this bound is wider
-# than MAX_RESPONSE_BYTES -- see docs/task-logs/T16.md.
-RECONCILE_MAX_RESPONSE_BYTES = 262_144
-# A real WAHA send either completes or times out within
-# REQUEST_TIMEOUT_SECONDS, so once more than that has elapsed since
-# attempt_window_start with no matching message in chat history, the
-# original request is conclusively over -- nothing will appear later. The
-# margin above the raw timeout absorbs WAHA-side echo/indexing latency
-# beyond what RECONCILE_POLL_ATTEMPTS already covers. See docs/task-logs/T16.md.
-RECONCILE_GRACE_SECONDS = 45.0
-# A message sent through WAHA is not always immediately visible via the
-# chats/messages endpoint -- verified against the real live session: a
-# just-completed send under light load typically took ~0.5-1.3s to appear
-# in chat history (isolated single-send measurements). This small bounded
-# retry smooths over that common case before falling through to the
-# elapsed-time-based outcome below. It is deliberately NOT sized to
-# absorb multi-second indexing backlogs (observed only under this task's
-# own rapid back-to-back test sends, not representative of this
-# application's one-send-per-day production cadence) -- reconcile_delivery
-# must stay cheap to call repeatedly, since a slower real backlog is
-# exactly what DELIVERY_UNKNOWN + the caller's own retry-later contract is
-# for (see the function's docstring). See docs/task-logs/T16.md.
-RECONCILE_POLL_ATTEMPTS = 3
-RECONCILE_POLL_DELAY_SECONDS = 1.0
+# Telegram status codes that are synchronous, definite answers -- the
+# request never landed in an unknown state, so it's safe to retry
+# immediately. This is deliberately an explicit allow-list, not a
+# blanket "4xx is safe" rule: T16 Task 13's finding F3 already proved
+# that assuming an entire status *range* is safe (WAHA's "any 4xx") can
+# be wrong in ways an allow-list of specifically-verified codes cannot.
+# Any status Telegram returns that is not in this set, and is not 200,
+# defaults to SenderAmbiguous.
+_DEFINITE_REJECTION_STATUS_CODES = frozenset({400, 401, 403, 404, 429})
 
 
 class SenderError(RuntimeError):
@@ -62,13 +38,19 @@ class SenderError(RuntimeError):
 
 
 class SenderRejected(SenderError):
-    """The request definitely never reached WAHA, or WAHA gave a definite
-    rejection. Safe to retry immediately -- see docs/task-logs/T16.md."""
+    """The request definitely never reached Telegram, or Telegram gave a
+    definite rejection. Safe to retry immediately."""
 
 
 class SenderAmbiguous(SenderError):
-    """WAHA may or may not have processed the request. Must be
-    reconciled before any retry -- see docs/task-logs/T16.md."""
+    """Telegram may or may not have processed the request -- either no
+    HTTP response was received at all, or Telegram returned a status
+    code outside the known-definite allow-list. Must not be retried
+    blindly. Under this project's Telegram design there is no chat-history
+    to reconcile against (Telegram's Bot API has no such method for
+    bots), so an ambiguous outcome becomes terminal for the Pacific day
+    rather than auto-resolved -- see delivery.py and
+    docs/superpowers/specs/2026-08-18-telegram-sender-design.md."""
 
 
 def sign_request(key: bytes, idempotency_key: str, timestamp: int) -> str:
@@ -96,6 +78,30 @@ def is_fresh(timestamp: int, now: datetime) -> bool:
     return abs(now.timestamp() - timestamp) <= REPLAY_WINDOW_SECONDS
 
 
+def _describe_rejection(body: bytes) -> str:
+    """Best-effort extraction of Telegram's error_code/description/
+    retry_after for diagnostics -- never raises. A malformed or truncated
+    rejection body doesn't change the outcome (the HTTP status code alone
+    already proved it's a definite rejection), it only loses the extra
+    detail in the exception message.
+    """
+
+    try:
+        payload = json.loads(body)
+        code = payload.get("error_code")
+        description = payload.get("description")
+        parameters = payload.get("parameters")
+        retry_after = (
+            parameters.get("retry_after") if isinstance(parameters, dict) else None
+        )
+    except (json.JSONDecodeError, AttributeError):
+        return "unparseable response body"
+    detail = f"error_code={code} description={description!r}"
+    if retry_after is not None:
+        detail += f" retry_after={retry_after}"
+    return detail
+
+
 async def send_voice_note(
     session: aiohttp.ClientSession,
     database: Database,
@@ -105,13 +111,23 @@ async def send_voice_note(
     timestamp: int,
     signature: str,
     now: datetime,
+    *,
+    api_base: str = TELEGRAM_API_BASE,
 ) -> str:
-    """Authenticate, validate, and send one voice note through WAHA.
+    """Authenticate, validate, and send one voice note through Telegram.
 
     No parameter can select a recipient -- the destination is always
-    ``settings.recipient``. Every check below runs before WAHA is ever
-    contacted; a failure at any step makes zero WAHA calls. Returns WAHA's
-    own message id on success. See docs/task-logs/T15.md.
+    ``settings.telegram_chat_id``. Every check below runs before Telegram
+    is ever contacted; a failure at any step makes zero Telegram calls.
+    Returns Telegram's own ``message_id`` (as a string, matching this
+    function's pre-existing return type) on success.
+
+    ``api_base`` defaults to the real Telegram API and should never be
+    passed by production code -- it exists only so tests can redirect
+    this call at a local fake server to force real network-level failure
+    modes (a real hanging connection, a real fixed HTTP status) without
+    needing a configurable production setting for something that is, in
+    production, always exactly one fixed official URL.
     """
 
     key = settings.sender_auth_key.reveal().encode()
@@ -138,235 +154,57 @@ async def send_voice_note(
     finally:
         temp_path.unlink(missing_ok=True)
 
-    phone_number = settings.recipient.reveal().removeprefix("+")
-    body = {
-        "chatId": f"{phone_number}@c.us",
-        "session": WAHA_SESSION_NAME,
-        "file": {
-            "mimetype": "audio/ogg; codecs=opus",
-            "filename": "voice-note.ogg",
-            "data": base64.b64encode(audio_bytes).decode("ascii"),
-        },
-    }
+    form = aiohttp.FormData()
+    form.add_field("chat_id", str(settings.telegram_chat_id.reveal()))
+    form.add_field(
+        "voice",
+        audio_bytes,
+        filename="voice-note.ogg",
+        content_type="audio/ogg",
+    )
+    bot_token = settings.telegram_bot_token.reveal()
+
     try:
         async with session.post(
-            f"{settings.waha_base_url}/api/sendVoice",
-            json=body,
-            headers={"X-Api-Key": settings.waha_token.reveal()},
+            f"{api_base}/bot{bot_token}/sendVoice",
+            data=form,
             timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
             allow_redirects=False,
         ) as response:
-            # A 4xx is WAHA giving a definite answer (safe to retry
-            # immediately); a 5xx is not -- WAHA could have dispatched the
-            # media before erroring internally, so it must be reconciled
-            # before any retry, same as a timeout or malformed response
-            # (T16 Task 13 fix, finding F3).
-            if 400 <= response.status < 500:
-                raise SenderRejected("WAHA send request failed")
-            if response.status >= 500:
-                raise SenderAmbiguous("WAHA send request failed")
+            status = response.status
             chunks: list[bytes] = []
             total = 0
             async for chunk in response.content.iter_chunked(RESPONSE_CHUNK_BYTES):
                 total += len(chunk)
                 if total > MAX_RESPONSE_BYTES:
-                    raise SenderAmbiguous("WAHA response exceeded the size limit")
+                    break
                 chunks.append(chunk)
-            payload = json.loads(b"".join(chunks))
-    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError):
-        raise SenderAmbiguous("WAHA send request failed") from None
+            body = b"".join(chunks)
+    except (aiohttp.ClientError, TimeoutError):
+        raise SenderAmbiguous("no response received from Telegram") from None
+
+    # Everything below runs on a real, received HTTP response -- a
+    # malformed or oversized body from here on is never re-classified as
+    # "no response received"; it's judged against the status code that
+    # already arrived.
+    if status in _DEFINITE_REJECTION_STATUS_CODES:
+        raise SenderRejected(
+            f"Telegram rejected the request: {_describe_rejection(body)}"
+        )
+    if status != 200:
+        raise SenderAmbiguous(
+            f"Telegram returned an unrecognized status {status}"
+        )
+    if total > MAX_RESPONSE_BYTES:
+        raise SenderAmbiguous("Telegram response exceeded the size limit")
 
     try:
-        return str(payload["key"]["id"])
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise SenderAmbiguous("Telegram response was not valid JSON") from None
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        raise SenderAmbiguous(f"Telegram response was malformed: {payload!r}")
+    try:
+        return str(payload["result"]["message_id"])
     except (KeyError, TypeError):
-        raise SenderAmbiguous("WAHA response was malformed") from None
-
-
-class _ReconcileQueryFailed(Exception):
-    """Internal signal: the WAHA chat-history query itself could not be
-    completed or answered a malformed payload. Never escapes
-    reconcile_delivery -- it always maps to DELIVERY_UNKNOWN."""
-
-
-def _find_matching_provider_id(
-    messages: object, window_start_timestamp: float
-) -> str | None:
-    """Scan an already-parsed WAHA chat-history JSON payload for an
-    outgoing voice message at or after ``window_start_timestamp``.
-
-    Pure and synchronous on purpose -- no network I/O -- so this can be
-    unit-tested directly with real Python data structures (not a mock of
-    anything) instead of needing a real WAHA call to exercise malformed
-    response shapes. Raises ``_ReconcileQueryFailed`` if ``messages``
-    itself is not a list, or if a message that has already matched
-    ``fromMe``/``hasMedia``/audio-``mimetype`` (i.e. WAHA is clearly
-    telling us this specific message *is* an outgoing voice note) turns
-    out to have a malformed ``timestamp`` or ``_data.key.id``.
-
-    That escalation matters: once a message has passed those substantive
-    filters, a malformed shape on it is not "not a match" -- it's "WAHA
-    answered but we can't trust what it said about the one message that
-    matters." Silently treating it as a non-match (the previous
-    behavior) would let a malformed shape on every candidate message look
-    identical to "genuinely nothing sent," which can resolve all the way
-    to ``AUDIO_READY`` once ``RECONCILE_GRACE_SECONDS`` elapses -- a
-    duplicate-send outcome, which is exactly what this fail-closed
-    ``_ReconcileQueryFailed`` escalation exists to prevent (the same path
-    a query-level failure already takes). A message that never matched
-    ``fromMe``/``hasMedia``/``mimetype`` in the first place is genuinely
-    not a candidate and still just continues to the next message.
-    """
-
-    if not isinstance(messages, list):
-        raise _ReconcileQueryFailed("WAHA chat-history response was malformed")
-
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        if message.get("fromMe") is not True:
-            continue
-        if message.get("hasMedia") is not True:
-            continue
-        media = message.get("media")
-        mimetype = media.get("mimetype") if isinstance(media, dict) else None
-        if not isinstance(mimetype, str) or not mimetype.startswith("audio/"):
-            continue
-        timestamp = message.get("timestamp")
-        if not isinstance(timestamp, int | float):
-            raise _ReconcileQueryFailed(
-                "WAHA chat-history message is missing a valid timestamp"
-            )
-        if timestamp < window_start_timestamp:
-            continue
-        try:
-            return str(message["_data"]["key"]["id"])
-        except (KeyError, TypeError):
-            raise _ReconcileQueryFailed(
-                "WAHA chat-history message is missing a valid id"
-            ) from None
-
-    return None
-
-
-async def _fetch_matching_provider_id(
-    session: aiohttp.ClientSession,
-    settings: Settings,
-    chat_id: str,
-    window_start_timestamp: float,
-) -> str | None:
-    """One real GET against WAHA's chat history. Returns the matching
-    outgoing voice message's provider_message_id (``_data.key.id``), or
-    ``None`` if the query succeeded but nothing matched. Raises
-    ``_ReconcileQueryFailed`` if the query itself failed or the response
-    was malformed -- see ``_find_matching_provider_id``.
-    """
-
-    try:
-        async with session.get(
-            f"{settings.waha_base_url}/api/{WAHA_SESSION_NAME}/chats/"
-            f"{chat_id}/messages",
-            params={"limit": str(RECONCILE_MESSAGE_LIMIT)},
-            headers={"X-Api-Key": settings.waha_token.reveal()},
-            timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
-            allow_redirects=False,
-        ) as response:
-            if response.status >= 400:
-                raise _ReconcileQueryFailed("WAHA chat-history request failed")
-            chunks: list[bytes] = []
-            total = 0
-            async for chunk in response.content.iter_chunked(RESPONSE_CHUNK_BYTES):
-                total += len(chunk)
-                if total > RECONCILE_MAX_RESPONSE_BYTES:
-                    raise _ReconcileQueryFailed(
-                        "WAHA chat-history response exceeded the size limit"
-                    )
-                chunks.append(chunk)
-            messages = json.loads(b"".join(chunks))
-    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as error:
-        raise _ReconcileQueryFailed("WAHA chat-history request failed") from error
-
-    return _find_matching_provider_id(messages, window_start_timestamp)
-
-    return None
-
-
-async def reconcile_delivery(
-    session: aiohttp.ClientSession,
-    settings: Settings,
-    attempt_window_start: datetime,
-    now: datetime,
-) -> tuple[MessageState, str | None]:
-    """Resolve an ambiguous submission by checking WAHA's own record of
-    what happened, since WAHA has no client-supplied idempotent message
-    ID to dedupe against.
-
-    Returns ``(MessageState.SENT, provider_message_id)`` if a matching
-    outgoing voice message is found in the recipient's chat history at or
-    after ``attempt_window_start``. Returns ``(MessageState.AUDIO_READY,
-    None)`` if no matching message was found *and* every query succeeded,
-    once enough time has passed since ``attempt_window_start`` that a real
-    send would already be visible. Otherwise returns
-    ``(MessageState.DELIVERY_UNKNOWN, None)`` -- covering both "not enough
-    time has passed to be sure" and "the WAHA query itself failed," so a
-    real WAHA outage can never be silently treated as "conclusively not
-    sent."
-
-    A message that really was sent is not always immediately visible via
-    WAHA's chat-history endpoint (confirmed against the real live session
-    -- see docs/task-logs/T16.md): this function retries the query a small
-    bounded number of times (``RECONCILE_POLL_ATTEMPTS``,
-    ``RECONCILE_POLL_DELAY_SECONDS`` apart) to smooth over the common
-    sub-2s indexing lag before falling through to the elapsed-time-based
-    outcome below. This retry is deliberately small -- it is not sized to
-    absorb multi-second indexing backlogs, since reconcile_delivery must
-    stay cheap for a caller to invoke repeatedly. A slower real backlog is
-    exactly what the ``DELIVERY_UNKNOWN`` outcome and "the caller retries
-    reconciliation later" contract below are for. A hard query failure
-    (bad status, network error, malformed payload) short-circuits
-    immediately to ``DELIVERY_UNKNOWN`` without retrying -- that is a
-    WAHA-reachability problem, not an indexing-lag problem, and retrying
-    it internally would just delay an already-known "unknown" answer.
-
-    ``DELIVERY_UNKNOWN`` is a sentinel, not a legal transition target:
-    ``DELIVERY_TRANSITIONS[MessageState.DELIVERY_UNKNOWN]`` only contains
-    ``AUDIO_READY``/``SENT`` (see ``database.py``), so
-    ``record_delivery_attempt`` raises ``InvalidTransition`` if handed
-    ``DELIVERY_UNKNOWN`` while the delivery is already in that state.
-    Callers (Task 8's ``delivery.py`` orchestrator) must check for this
-    third outcome explicitly and skip calling ``record_delivery_attempt``
-    entirely when it's returned -- retry reconciliation later instead of
-    passing it through. See docs/task-logs/T16.md.
-    """
-
-    phone_number = settings.recipient.reveal().removeprefix("+")
-    chat_id = f"{phone_number}@c.us"
-    window_start_timestamp = attempt_window_start.timestamp()
-
-    for attempt in range(RECONCILE_POLL_ATTEMPTS):
-        try:
-            provider_message_id = await _fetch_matching_provider_id(
-                session, settings, chat_id, window_start_timestamp
-            )
-        except _ReconcileQueryFailed:
-            return MessageState.DELIVERY_UNKNOWN, None
-        if provider_message_id is not None:
-            return MessageState.SENT, provider_message_id
-        if attempt < RECONCILE_POLL_ATTEMPTS - 1:
-            await asyncio.sleep(RECONCILE_POLL_DELAY_SECONDS)
-
-    return _no_match_outcome(attempt_window_start, now)
-
-
-def _no_match_outcome(
-    attempt_window_start: datetime, now: datetime
-) -> tuple[MessageState, str | None]:
-    """Every query succeeded but no matching send was found anywhere in
-    the retry loop. Only conclude AUDIO_READY once enough time has passed
-    that a real send would already be over one way or another -- see
-    RECONCILE_GRACE_SECONDS. Before that, stay DELIVERY_UNKNOWN.
-    """
-
-    elapsed = (now - attempt_window_start).total_seconds()
-    if elapsed >= RECONCILE_GRACE_SECONDS:
-        return MessageState.AUDIO_READY, None
-    return MessageState.DELIVERY_UNKNOWN, None
+        raise SenderAmbiguous("Telegram response was malformed") from None
