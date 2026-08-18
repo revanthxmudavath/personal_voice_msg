@@ -544,28 +544,47 @@ a git-ignored-but-still-in-repo directory, correctly flagged by
 
 ## Immediate next step
 
-`task/T15-locked-waha-sender` is merged. T16 (exactly-once delivery and
-ambiguity recovery) is in progress on `task/T16-exactly-once-delivery`,
-not yet merged, executed via `superpowers:subagent-driven-development`
-against `docs/superpowers/plans/2026-08-09-t16-exactly-once-delivery.md`
-(ledger: `.superpowers/sdd/2026-08-09-t16-exactly-once-delivery/progress.md`
-in that branch's worktree). 11 of 13 plan tasks are complete and
-independently reviewed clean (database schema/migrations, `sender.py`
-reconciliation, `delivery.py`'s `run_daily_send` orchestrator covering
-crash/restart/retry/reconciliation across every delivery state, and the
-DAILY_SEND window gate). Task 12 (the done-when-gate fault-injection
-suite, `tests/e2e/test_delivery_fault_injection.py`) is in progress: an
-independent review found a real gap (a reconciliation-window
-false-positive plus a near-tautological assertion, both letting the
-suite falsely appear to prove no-duplicate-sends); a fix is implemented
-and passes everything that doesn't require WAHA (fast suite, mypy,
-ruff), but the real WAHA session is currently logged out and refusing
-re-pairing, so the fix is not yet live-verified and has not had its
-required independent review completed -- both are blocked until WAHA
-reconnects. Task 13 has not started. T16 is on the plan's mandatory
-independent-security-review list (T06, T15, T16, T17, T18) and still
-needs its own whole-branch review before merge, on top of Task 12's
-review. T16 is what actually persists WAHA message identifiers and
-attempt records for exactly-once delivery -- T15's `sender_auth_nonces`
-table is authentication-layer replay protection only and does not cover
-that.
+**Correction to this section's prior text (2026-08-18):** it previously said T16 was "not yet
+merged." That was stale -- T16 (`task/T16-exactly-once-delivery`) merged as PR #24
+(commit `37d7621`) before the events below unfolded. Its Task 12 open item (the done-when-gate
+fault-injection suite's live-WAHA verification, blocked because the real WAHA session was logged
+out and refusing re-pairing) was left outstanding at merge time -- see
+`.superpowers/sdd/2026-08-09-t16-exactly-once-delivery/progress.md` in that branch's worktree for
+the full ledger. That open item is now **superseded, not resolved**: see below for why.
+
+**WAHA/WhatsApp-Web self-hosted automation is confirmed dead**, not just stalled. The WAHA session's
+"logged out, won't re-pair" symptom turned out to be WhatsApp's own server-side device-linking
+throttle: 5 real linking attempts across 4 architecturally distinct client libraries (Baileys/NOWEB,
+whatsmeow/GOWS, whatsapp-web.js via OpenWA and via WPPConnect Server), all refused identically with
+"can't link new device." Full evidence and sourcing: `docs/research/waha-alternatives.md`. This
+exhausts the practical self-hosted design space -- do not re-litigate it.
+
+**Staying on WhatsApp via an official Business Solution Provider was also evaluated and rejected.**
+Every BSP (Twilio, 360dialog, plus a comparative sweep of Gupshup/Bird/Vonage/Infobip) sits on the
+identical Meta WhatsApp Business Platform and inherits the same two rules: proactive messages
+outside an open 24-hour session require a pre-approved template, and no template header format
+supports audio (confirmed live against current Meta docs, 2026-08-17 -- still true, and Meta added a
+new wrinkle since mid-2026: Marketing-category templates, the one category that doesn't need a
+session, are now blocked outright for US recipients). The one real bridge mechanism (a daily
+button-tap reopening the session) is genuine but was rejected: it's a recipient action every day
+forever (not one-time), the trigger template likely can't get Utility approval, and it roughly
+doubles T16's exactly-once-delivery complexity with a new inbound-webhook dedup/auth surface this
+project's design doesn't otherwise need. Full evidence: `docs/research/whatsapp-bsp-alternatives.md`.
+
+**Decision (owner-approved, 2026-08-18): migrate the sender to the Telegram Bot API**, chosen over
+Discord, Signal, and SMS/MMS -- see `docs/research/next-platform-alternatives.md` for the full
+comparison and `docs/superpowers/specs/2026-08-18-telegram-sender-design.md` for the approved
+design. Telegram is free, its `sendVoice` format requirement already matches T14's OGG/Opus output
+with zero pipeline changes, the recipient's only action is a one-time `/start` (not recurring), and
+-- the most consequential fact for T16 -- Telegram's Bot API has no chat-history-read method for
+bots at all, so T16's chat-history-scraping reconciliation subsystem (`sender.py`'s
+`reconcile_delivery`/`_find_matching_provider_id`/etc., over half that file) is not something to
+port, it's something to delete outright. The general delivery-state-machine work T16 also did
+(crash/restart/retry orchestration in `delivery.py`) is kept, not redone.
+
+**Actual next step:** invoke `superpowers:writing-plans` against
+`docs/superpowers/specs/2026-08-18-telegram-sender-design.md` to produce an implementation plan
+(the spec flags several decisions -- exact backlog task numbering, the enrollment script's CLI
+shape, `file_id` reuse on retry -- as explicitly deferred to that phase). The design spec is
+self-contained; a fresh session can read it plus the three linked research notes without needing
+prior conversation history.
