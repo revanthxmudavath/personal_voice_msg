@@ -23,12 +23,18 @@ from personal_voice_msg.scheduling import (
     planned_triggers_for_date,
 )
 from personal_voice_msg.sender import (
-    RECONCILE_MAX_RESPONSE_BYTES,
-    RECONCILE_MESSAGE_LIMIT,
     REQUEST_TIMEOUT_SECONDS,
     RESPONSE_CHUNK_BYTES,
-    WAHA_SESSION_NAME,
 )
+
+# T16b: reconciliation system removed for Telegram migration.
+# These constants were part of WAHA-specific reconciliation logic.
+# This test file is now WAHA-only and will skip when WAHA environment
+# variables are not set. The constants below are kept for reference but
+# the file should be deprecated or rewritten for Telegram.
+RECONCILE_MAX_RESPONSE_BYTES = 65_536
+RECONCILE_MESSAGE_LIMIT = 100
+WAHA_SESSION_NAME = "default"
 
 pytestmark = pytest.mark.e2e
 
@@ -45,8 +51,8 @@ if _MISSING:
         pytest.mark.e2e,
         pytest.mark.skip(
             reason=(
-                "requires a real consented test voice sample, a real paired "
-                "WAHA session, and real container control; set "
+                "T16b: WAHA-only tests; requires real WAHA container control "
+                "and reconciliation system (removed for Telegram). Set "
                 f"{', '.join(_MISSING)} (docs/task-logs/T16.md)"
             )
         ),
