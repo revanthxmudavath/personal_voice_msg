@@ -19,7 +19,7 @@ FORBIDDEN_CONFIG_IMPORTS = {"Settings", "load_settings"}
 # T13 entry ("scoped to currently-existing code only, since the sender
 # doesn't exist until T15/T16, which must extend this same check when
 # built") -- see docs/task-logs/T15.md.
-FORBIDDEN_ATTRIBUTE_NAMES = {"voice_embedding", "sender_auth_key", "waha_token"}
+FORBIDDEN_ATTRIBUTE_NAMES = {"voice_embedding", "sender_auth_key", "telegram_bot_token"}
 
 
 def _iter_source_files(package: str) -> list[Path]:
