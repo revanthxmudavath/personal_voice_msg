@@ -21,7 +21,6 @@ from personal_voice_msg.scheduling import (
     ScheduleKind,
     planned_triggers_for_date,
 )
-from personal_voice_msg.sender import SenderAmbiguous, send_voice_note, sign_request
 
 pytestmark = pytest.mark.e2e
 
@@ -45,11 +44,6 @@ if _MISSING:
 @pytest.fixture(scope="module")
 def settings() -> Settings:
     return load_settings(Path(os.environ[TELEGRAM_SETTINGS_ENV]))
-
-
-@pytest.fixture(scope="module")
-def valid_audio_text() -> str:
-    return "A T16b fault-injection test."
 
 
 PACIFIC_DATE = datetime.now(PACIFIC).date()
@@ -103,6 +97,12 @@ class _HangingServer:
         self._socket.close()
 
 
+# Not the independent proof of "no duplicate send" on its own -- under
+# this design DELIVERY_TRANSITIONS[SENT] = set() makes a second 'sent'
+# row structurally impossible once one exists (database.py), so this
+# count is a consistency check, not the primary evidence. The primary
+# evidence is the session=None calls above/below: any code path that
+# attempted a real send would raise before reaching these assertions.
 def _sent_count(database_path: Path, delivery_id: int) -> tuple[int]:
     with sqlite3.connect(database_path) as connection:
         row = connection.execute(
@@ -205,15 +205,12 @@ def test_restart_at_every_delivery_state_never_duplicates_a_send(
 def test_a_real_timeout_during_send_becomes_delivery_unknown_and_never_retries(
     settings: Settings, tmp_path: Path
 ) -> None:
-    """Composes two already-proven pieces rather than re-deriving fault
-    injection from scratch: tests/security/test_sender_error_taxonomy.py
-    proves a real hang raises SenderAmbiguous; the restart-matrix test
-    above proves a DELIVERY_UNKNOWN delivery never retries. This connects
-    them through a real send attempt: pause is impossible (there is no
-    container to pause under Telegram), so the fault is injected via a
-    real hanging local server instead, redirected to via
-    send_voice_note's api_base override -- exactly the mechanism
-    tests/security/test_sender_error_taxonomy.py already established.
+    """Real fault injection through the actual production orchestrator,
+    not a hand-reproduced imitation of it: run_daily_send's own
+    AUDIO_READY branch is exercised directly against a real hanging local
+    server via the api_base override, so this test proves what
+    delivery.py itself does on a real ambiguous outcome, not what this
+    test file assumes it does.
     """
     database_path = tmp_path / "state.sqlite3"
     database = Database(database_path)
@@ -228,37 +225,27 @@ def test_a_real_timeout_during_send_becomes_delivery_unknown_and_never_retries(
     produce_voice_note(
         database, reservation.delivery_id, embedding_path, text, temp_destination, now
     )
-    database.transition_delivery(reservation.delivery_id, MessageState.SENDING, now)
-    audio_bytes = database.get_audio_data(reservation.delivery_id)
-    idempotency_key = f"delivery-{reservation.delivery_id}"
-    timestamp = int(now.timestamp())
-    signature = sign_request(
-        settings.sender_auth_key.reveal().encode(), idempotency_key, timestamp
-    )
 
     server = _HangingServer()
     try:
-        async def attempt() -> None:
+        async def attempt() -> MessageState:
             async with aiohttp.ClientSession() as session:
-                await send_voice_note(
-                    session, database, settings, audio_bytes, idempotency_key,
-                    timestamp, signature, now,
+                return await run_daily_send(
+                    database, settings, session, recipient_key,
+                    PACIFIC_DATE, embedding_path, now,
                     api_base=f"http://127.0.0.1:{server.port}",
                 )
 
-        with pytest.raises(SenderAmbiguous):
-            asyncio.run(attempt())
+        result = asyncio.run(attempt())
     finally:
         server.stop()
 
-    # Exactly what delivery.py's own AUDIO_READY branch does on
-    # SenderAmbiguous -- reproduced directly since run_daily_send always
-    # targets the real Telegram API with no fake-server override of its
-    # own (only send_voice_note has one, added in Task 3 specifically for
-    # testing).
-    database.record_delivery_attempt(
-        reservation.delivery_id, MessageState.DELIVERY_UNKNOWN, now
+    assert result is MessageState.DELIVERY_UNKNOWN
+    assert (
+        database.get_delivery_state(reservation.delivery_id)
+        is MessageState.DELIVERY_UNKNOWN
     )
+    assert _sent_count(database_path, reservation.delivery_id) == (0,)
 
     async def resume_no_network() -> MessageState:
         return await run_daily_send(
@@ -266,6 +253,6 @@ def test_a_real_timeout_during_send_becomes_delivery_unknown_and_never_retries(
             PACIFIC_DATE, embedding_path, now,
         )
 
-    result = asyncio.run(resume_no_network())
-    assert result is MessageState.DELIVERY_UNKNOWN
+    second_result = asyncio.run(resume_no_network())
+    assert second_result is MessageState.DELIVERY_UNKNOWN
     assert _sent_count(database_path, reservation.delivery_id) == (0,)

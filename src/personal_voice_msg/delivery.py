@@ -16,6 +16,7 @@ from personal_voice_msg.scheduling import (
     planned_triggers_for_date,
 )
 from personal_voice_msg.sender import (
+    TELEGRAM_API_BASE,
     SenderAmbiguous,
     SenderRejected,
     send_voice_note,
@@ -31,10 +32,18 @@ async def run_daily_send(
     pacific_date: date,
     embedding_path: Path,
     now: datetime,
+    *,
+    api_base: str = TELEGRAM_API_BASE,
 ) -> MessageState:
     """Advance today's delivery by one orchestration step from wherever it
     currently sits, and return its resulting state. Callers loop this
     within the send window -- see Task 11.
+
+    ``api_base`` defaults to the real Telegram API and should never be
+    passed by production code -- it exists only so tests can redirect the
+    one real network call this function can make (inside the
+    ``AUDIO_READY`` branch) at a local fake server, mirroring
+    ``send_voice_note``'s own identical parameter (Task 3).
     """
     send_trigger = next(
         trigger
@@ -112,6 +121,7 @@ async def run_daily_send(
             provider_message_id = await send_voice_note(
                 session, database, settings, audio_bytes,
                 idempotency_key, timestamp, signature, now,
+                api_base=api_base,
             )
         except SenderRejected:
             database.record_delivery_attempt(delivery_id, MessageState.FAILED, now)
