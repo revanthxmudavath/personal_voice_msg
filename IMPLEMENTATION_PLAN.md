@@ -797,27 +797,99 @@ Implementation:
 
 Done when fault tests produce no duplicate sends. This blocks production release.
 
-### T17 — Recipient consent, STOP, and kill switch
+**Status note (2026-08-19):** WAHA/self-hosted WhatsApp-Web automation is confirmed dead (see
+`docs/research/waha-alternatives.md`) — the account is blocked at WhatsApp's own server-side
+device-linking layer, not by any tool bug. The owner approved migrating the sender to the
+Telegram Bot API (`docs/superpowers/specs/2026-08-18-telegram-sender-design.md`). T16's
+delivery-state-machine work above (schema, transactional attempt records, the crash/restart
+orchestration in `delivery.py`) is transport-agnostic and is kept as-is. Only the WAHA-specific
+transport (reconciliation-by-chat-history-scraping, the WAHA HTTP calls) is superseded — by T16b,
+below.
 
-Dependencies: T15, T16
+### T16b — Telegram sender migration
 
-Independent security review required.
+Dependencies: T15, T16 (kept: the delivery-state-machine; superseded: the WAHA-specific transport
+and reconciliation subsystem)
 
-Red tests using real inbound messages:
+Independent security review required (same mandatory-review posture as T15/T16 — this task
+touches secrets and the locked sender boundary).
 
-- exact `STOP` from the allowlisted recipient disables sending.
-- `STOP` from another number has no effect.
-- other replies never invoke the agent.
-- disabled state survives restart.
-- the administrator kill switch stops a reserved send.
+Full design: `docs/superpowers/specs/2026-08-18-telegram-sender-design.md`. Detailed task-by-task
+plan: `docs/superpowers/plans/2026-08-19-t16b-telegram-sender-migration.md`.
+
+Red tests:
+
+- a valid signed local-trigger request produces a real Telegram voice-note send.
+- `send_voice_note` has no recipient-shaped parameter (structural, unchanged from T15).
+- pre-network checks (signature, replay, audio validation) reject before any Telegram call is made.
+- a Telegram 4xx response (400/401/403/404/429) maps to `SenderRejected`.
+- a network failure with no HTTP response received at all maps to `SenderAmbiguous`.
+- an ambiguous outcome never retries the same Pacific day (`delivery.py`'s `DELIVERY_UNKNOWN`
+  branch is terminal-for-the-day, not auto-resolved).
+- recipient enrollment captures the first inbound message's `chat_id` and refuses to overwrite an
+  already-enrolled recipient.
+- `discovery`/`generation`/`judging` still cannot reach the sender, the bot token, or the enrolled
+  `chat_id` (security AST boundary test, extended).
 
 Implementation:
 
-- Process only the exact opt-out command.
-- Add a durable global sending flag and audited re-enable procedure.
-- Ignore all other inbound conversation content.
+- Rewrite `sender.py`'s `send_voice_note` to call Telegram's `sendVoice`; delete the
+  reconciliation subsystem (`reconcile_delivery`, `_fetch_matching_provider_id`,
+  `_find_matching_provider_id`, `_no_match_outcome`, and their WAHA-chat-history constants)
+  outright — Telegram's Bot API has no chat-history-read method for bots, so there is nothing to
+  reconcile against.
+- Add `recipient_enrollment.py` (`enroll_recipient`), modeled on T13's `enroll_voice` one-time,
+  file-based, immutable-once-written trust pattern.
+- Replace `Settings`' WAHA fields (`waha_base_url`, `waha_token`, `waha_session`, `recipient`)
+  with `telegram_bot_token` and `telegram_chat_id`.
+- Simplify `delivery.py`'s `DELIVERY_UNKNOWN` branch: remove the reconciliation call, make the
+  state terminal for the Pacific day (surfaced for the owner, per the "never carry a missed send
+  into the next Pacific day" rule).
+- Remove the WAHA service from `docker-compose.yml` entirely — no browser-automation container,
+  no session volume, no QR pairing.
 
-Done when opt-out and kill-switch behavior survives restart and cannot be bypassed.
+Done when a real signed local-trigger request produces a real Telegram voice note in the owner's
+own test chat, no duplicate sends are possible (traced statically through every delivery state,
+plus a real fault-injection test proving `DELIVERY_UNKNOWN` never auto-retries), and the
+independent review is clean.
+
+### T17 — Recipient consent, STOP, and kill switch (Telegram)
+
+Dependencies: T15, T16, T16b
+
+Independent security review required.
+
+**Rewritten 2026-08-19** for Telegram's actual mechanics — see
+`docs/superpowers/specs/2026-08-18-telegram-sender-design.md`'s "Inbound handling" section. The
+original WAHA-shaped version of this task (inbound WhatsApp messages) is superseded; nothing from
+it carries forward except the underlying requirement (exact STOP, kill switch, restart-durable).
+
+Red tests using real inbound Telegram messages:
+
+- exact `STOP` from the enrolled `telegram_chat_id` disables sending durably.
+- `STOP` from any other chat id has no effect (never enrolled, never checked — matches the
+  existing "other inbound messages are ignored" rule).
+- other replies never invoke the discovery agent.
+- disabled state survives restart.
+- the administrator kill switch stops a reserved send.
+- a `403 Forbidden: bot was blocked by the user` at send time also durably disables sending —
+  Telegram's only proactive block signal, necessarily reactive (learned only by attempting a
+  send), not queryable in advance.
+
+Implementation:
+
+- Poll Telegram's `getUpdates` at low frequency (once during the daily send window is sufficient
+  at this volume) with a durably-stored `offset` cursor, inspecting only messages from the
+  enrolled `telegram_chat_id`. This is an outbound HTTPS call — no inbound port opens anywhere,
+  `AGENTS.md` §Network and container rules is satisfied unchanged.
+- Process only the exact opt-out command from the enrolled chat id; ignore everything else.
+- Add a durable global sending flag and audited re-enable procedure.
+- Treat a `403 bot was blocked` response from `send_voice_note` as an additional durable stop
+  signal, alongside exact STOP.
+
+Done when opt-out, the blocked-by-user signal, and kill-switch behavior all survive restart and
+cannot be bypassed. Plan this task in its own `writing-plans` session once T16b ships — do not plan
+it now, per this project's one-task-at-a-time discipline.
 
 ### T18 — Cloud and container hardening
 
