@@ -242,6 +242,9 @@ def test_a_definite_rejection_status_raises_sender_rejected_not_ambiguous(
 @pytest.mark.parametrize(
     "status_line",
     [
+        "HTTP/1.1 402 Payment Required",
+        "HTTP/1.1 405 Method Not Allowed",
+        "HTTP/1.1 418 I'm a teapot",
         "HTTP/1.1 500 Internal Server Error",
         "HTTP/1.1 502 Bad Gateway",
         "HTTP/1.1 503 Service Unavailable",
@@ -285,6 +288,31 @@ def test_a_malformed_200_response_raises_sender_ambiguous(
     send -- Telegram's own contract is that ``ok`` is authoritative, not
     the HTTP status alone."""
     server = _FixedStatusServer("HTTP/1.1 200 OK", body=b'{"ok":false}')
+    try:
+        settings = _settings(tmp_path)
+        database = Database(tmp_path / "state.sqlite3")
+        database.migrate()
+
+        with pytest.raises(SenderAmbiguous):
+            asyncio.run(
+                _send(
+                    settings,
+                    valid_audio_bytes,
+                    database,
+                    f"http://127.0.0.1:{server.port}",
+                )
+            )
+    finally:
+        server.stop()
+
+
+def test_a_200_response_with_malformed_result_raises_sender_ambiguous(
+    valid_audio_bytes: bytes, tmp_path: Path
+) -> None:
+    """Telegram's contract is ok:true plus a well-shaped result.message_id
+    -- a 200 with ok:true but a missing/malformed result must not be
+    silently treated as success either."""
+    server = _FixedStatusServer("HTTP/1.1 200 OK", body=b'{"ok":true,"result":{}}')
     try:
         settings = _settings(tmp_path)
         database = Database(tmp_path / "state.sqlite3")
