@@ -3,7 +3,11 @@
 **Date:** 2026-08-18
 **Status:** Approved by owner, not yet planned or implemented. This spec is the handoff point —
 a fresh session should be able to execute from this document alone, without the brainstorming
-conversation that produced it.
+conversation that produced it. **2026-08-19 update:** a short follow-up brainstorming pass (new
+session, after confirming the git tree was fully synced and this spec was actually merged) closed
+the three items this spec originally left open for the plan phase — recipient-enrollment shape,
+`file_id` reuse, and backlog placement. All three are now resolved inline below, not deferred.
+Nothing in this spec is open anymore; `writing-plans` can proceed directly.
 **Author context:** produced via `superpowers:brainstorming`, gated on owner approval per that
 skill's hard gate. Research phase used `superpowers:dispatching-parallel-agents` (10 parallel
 research agents across two rounds — see the two research notes linked below).
@@ -113,9 +117,13 @@ endpoint against replay, independent of which downstream platform receives the v
    afterward — the captured `chat_id` becomes immutable once enrolled, same as the current phone
    number field's trust model.
 
-**Open implementation question for the plan phase**: exact CLI/script shape for step 4 (a new
-`enroll_recipient.py`-style module, or a flag on an existing entrypoint) — not decided here,
-left to `writing-plans`.
+**Resolved (2026-08-19, follow-up brainstorming pass):** a plain function, no CLI framework —
+matches T13's actual precedent exactly (`voice_enrollment.py`'s `enroll_voice` has no CLI wrapper
+of its own today; it's called directly). New module `src/personal_voice_msg/recipient_enrollment.py`
+with one function, `enroll_recipient(bot_token, database) -> int`, invoked the same way
+`enroll_voice` already is — a short one-off invocation the owner runs once, not a permanent
+`argparse`-based CLI tool. Raises if a recipient is already enrolled (immutable once set, same
+trust model as voice enrollment).
 
 ## Inbound handling: STOP, without a public port
 
@@ -157,11 +165,18 @@ the same way it already would have. Given Telegram's failure surface is overwhel
 synchronous/definite (per `docs/research/next-platform-alternatives.md`'s Telegram research), this
 case should be rare in production.
 
-**Retry-with-`file_id` note for the plan phase**: Telegram returns a `file_id` on any successful
-upload, reusable for future sends without re-uploading bytes — irrelevant to the ambiguous-outcome
-question above (a retry never happens same-day regardless), but worth considering during
-implementation for the definite-`Rejected`-then-retry path, where re-uploading the same audio bytes
-on every retry attempt is wasteful. Not decided here.
+**Resolved (2026-08-19, follow-up brainstorming pass): defer `file_id` reuse entirely.** Traced
+through the actual retry path and found the literal premise doesn't hold: Telegram only returns a
+`file_id` on a *successful* send, and every `SenderRejected` outcome (bad signature, stale
+timestamp, validation failure, or a definite 4xx from Telegram) means the upload never completed —
+there is no `file_id` to have cached from a rejected attempt. A successful send is terminal (no
+retry follows it). A real `file_id`-caching optimization would need a different shape entirely
+(upload once to a private cache chat, reuse that `file_id` for the real send) — a second upload
+path with its own failure modes, not a small tweak. Given voice notes here are small (seconds of
+speech, well under the 50MB cap) and this is once-a-day cadence, not high-volume, the simplest
+correct version — upload the audio bytes directly on every real send attempt, no caching layer —
+is the implementation. Revisit only if real production retry volume ever justifies the added
+complexity.
 
 ## Testing plan (no-mock TDD policy unchanged, `AGENTS.md` §Strict no-mock TDD policy)
 
@@ -179,15 +194,22 @@ on every retry attempt is wasteful. Not decided here.
 - The T20-equivalent staging soak (real days of delivery to the owner's own test chat) still applies
   before flipping the enrolled `chat_id` to the real recipient.
 
-## Backlog placement — open question for `writing-plans`
+## Backlog placement (resolved 2026-08-19, follow-up brainstorming pass)
 
 This migration replaces the WAHA-specific parts of T15/T16 without touching T16's general
-delivery-state-machine work. `IMPLEMENTATION_PLAN.md` needs an amendment. Recommendation (not
-decided, flag for the plan phase): insert as a new task between the now-merged T16 and the
-not-yet-started T17 ("Recipient consent, STOP, and kill switch") — T17 is inherently
-platform-specific and should be planned against Telegram's actual mechanics (Section "Inbound
-handling" above), not WAHA's. Whether this becomes "T16b," a renumbered "T17" with the old T17
-pushed down, or its own top-level slot is a `writing-plans`-phase decision, not this spec's.
+delivery-state-machine work. `IMPLEMENTATION_PLAN.md` needs an amendment.
+
+**Decision: insert a new task, T16b, between T16 and T17**, scoped to just the transport
+migration — delete the reconciliation subsystem, add Telegram `sendVoice`, recipient enrollment,
+`Settings` changes. T17 ("Recipient consent, STOP, and kill switch") keeps its number and its own
+independent security review, but its red tests and implementation section get rewritten for
+Telegram's actual mechanics (the "Inbound handling" section above — `getUpdates` polling, not a
+WAHA-received-message assumption) rather than superseded or merged into T16b. Rationale: T16b's
+review stays focused on "does the sender correctly talk to Telegram," T17's stays focused on "does
+STOP/kill-switch actually work and survive restart" — neither task balloons, and T18-T20's numbers
+never move, so no cascading edits through the rest of the plan or any doc that references them by
+number. This split, and T17's content rewrite, are `writing-plans`' job to actually carry out
+against `IMPLEMENTATION_PLAN.md` — this spec only fixes the decision.
 
 ## What does NOT change
 
