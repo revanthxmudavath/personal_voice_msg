@@ -41,7 +41,18 @@ def _extract_chat_id(payload: dict[str, Any]) -> int:
             "bot first, then retry enrollment"
         )
 
-    chat = messages[-1].get("chat")
+    raw_chat_ids = {
+        (chat.get("id") if isinstance(chat, dict) else None)
+        for chat in (message.get("chat") for message in messages)
+    }
+    if len(raw_chat_ids) > 1:
+        raise EnrollmentError(
+            "inbound messages came from more than one chat -- enrollment "
+            "requires an unambiguous single sender; clear stray messages "
+            "and retry"
+        )
+
+    chat = messages[0].get("chat")
     chat_id = chat.get("id") if isinstance(chat, dict) else None
     # Explicitly excludes bool -- see config.py's _telegram_chat_id for the
     # same guard and why it matters (JSON true/false deserialize to
@@ -60,8 +71,9 @@ async def enroll_recipient(
     bot_token: str, destination: Path, profile: RuntimeProfile
 ) -> int:
     """One-time: poll Telegram's getUpdates once, capture the chat_id of
-    whoever sent the most recent inbound message, and write it to
-    ``destination`` as the fixed allowlisted recipient.
+    whoever sent an inbound message (rejecting the batch if more than one
+    distinct chat sent one), and write it to ``destination`` as the fixed
+    allowlisted recipient.
 
     Refuses to run at all if ``destination`` already exists -- the
     captured chat_id becomes immutable once enrolled, matching

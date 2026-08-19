@@ -13,13 +13,19 @@ FORBIDDEN_MODULES = {
     "pocket_tts",
     "personal_voice_msg.voice_enrollment",
     "personal_voice_msg.sender",
+    "personal_voice_msg.delivery",
 }
 FORBIDDEN_CONFIG_IMPORTS = {"Settings", "load_settings"}
 # T15 extends this boundary to the sender's own secrets, per AGENTS.md's
 # T13 entry ("scoped to currently-existing code only, since the sender
 # doesn't exist until T15/T16, which must extend this same check when
 # built") -- see docs/task-logs/T15.md.
-FORBIDDEN_ATTRIBUTE_NAMES = {"voice_embedding", "sender_auth_key", "telegram_bot_token"}
+FORBIDDEN_ATTRIBUTE_NAMES = {
+    "voice_embedding",
+    "sender_auth_key",
+    "telegram_bot_token",
+    "telegram_chat_id",
+}
 
 
 def _iter_source_files(package: str) -> list[Path]:

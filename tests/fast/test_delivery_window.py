@@ -57,16 +57,17 @@ def test_run_daily_send_rejects_a_call_at_or_after_the_cutoff(tmp_path: Path) ->
 def test_run_daily_send_sending_on_entry_preserves_the_original_sending_time(
     tmp_path: Path,
 ) -> None:
-    """T16 Task 13 fix, finding F2: a delivery found already in SENDING at
-    orchestrator startup (standing in for a crashed prior process) must
-    have its crash-recovery DELIVERY_UNKNOWN attempt stamped with the
-    original SENDING-entry time, not this restart call's own real
-    invocation time -- otherwise the next DELIVERY_UNKNOWN branch's
-    reconciliation window would start after any real WhatsApp message the
-    crashed process's send may have actually produced, and could never
-    find it. This branch returns before ever calling reconcile_delivery,
-    so it needs no real WAHA/settings/session -- see the window-open
-    tests above for the same no-network pattern.
+    """T16 Task 13 fix, finding F2, carried forward under Telegram
+    (T16b Task 4): a delivery found already in SENDING at orchestrator
+    startup (standing in for a crashed prior process) must have its
+    crash-recovery DELIVERY_UNKNOWN attempt stamped with the original
+    SENDING-entry time, not this restart call's own real invocation time
+    -- the stamped time is the delivery's permanent audit record of when
+    the ambiguous send actually happened, even though DELIVERY_UNKNOWN is
+    now terminal for the day (no reconciliation exists under Telegram; see
+    Task 3/Task 4). This branch returns immediately without ever calling
+    send_voice_note, so it needs no real Telegram/settings/session -- see
+    the window-open tests above for the same no-network pattern.
     """
     database = Database(tmp_path / "state.sqlite3")
     database.migrate()

@@ -15,7 +15,20 @@ from personal_voice_msg.recipient_enrollment import (
 
 
 @pytest.mark.fast
-def test_extract_chat_id_reads_the_most_recent_inbound_message() -> None:
+def test_extract_chat_id_reads_the_chat_id_when_all_messages_agree() -> None:
+    payload = {
+        "ok": True,
+        "result": [
+            {"update_id": 1, "message": {"chat": {"id": 222}}},
+            {"update_id": 2, "message": {"chat": {"id": 222}}},
+        ],
+    }
+
+    assert _extract_chat_id(payload) == 222
+
+
+@pytest.mark.fast
+def test_extract_chat_id_rejects_more_than_one_distinct_chat() -> None:
     payload = {
         "ok": True,
         "result": [
@@ -24,7 +37,8 @@ def test_extract_chat_id_reads_the_most_recent_inbound_message() -> None:
         ],
     }
 
-    assert _extract_chat_id(payload) == 222
+    with pytest.raises(EnrollmentError, match="more than one chat"):
+        _extract_chat_id(payload)
 
 
 @pytest.mark.fast
