@@ -191,7 +191,9 @@ T00 is complete only when:
   qualification remains required
 - Pocket TTS for authorized voice embedding and synthesis
 - FFmpeg for OGG/Opus conversion and validation
-- WAHA Core behind a narrow internal sender
+- Telegram Bot API behind the same-shaped internal sender boundary
+  (migrated from WAHA in T16b -- see docs/task-logs/T16b.md; WAHA/self-hosted
+  WhatsApp-Web automation confirmed dead, see docs/research/waha-alternatives.md)
 - Docker Compose on one hardened US-West cloud VPS
 - WireGuard and key-only SSH for administration
 
@@ -582,9 +584,22 @@ bots at all, so T16's chat-history-scraping reconciliation subsystem (`sender.py
 port, it's something to delete outright. The general delivery-state-machine work T16 also did
 (crash/restart/retry orchestration in `delivery.py`) is kept, not redone.
 
-**Actual next step:** invoke `superpowers:writing-plans` against
-`docs/superpowers/specs/2026-08-18-telegram-sender-design.md` to produce an implementation plan
-(the spec flags several decisions -- exact backlog task numbering, the enrollment script's CLI
-shape, `file_id` reuse on retry -- as explicitly deferred to that phase). The design spec is
-self-contained; a fresh session can read it plus the three linked research notes without needing
-prior conversation history.
+**Update (2026-08-19): T16b is complete and merged.** The plan produced from
+`docs/superpowers/specs/2026-08-18-telegram-sender-design.md` (8 tasks,
+`docs/superpowers/plans/2026-08-19-t16b-telegram-sender-migration.md`) migrated the sender to the
+Telegram Bot API, deleted the WAHA reconciliation subsystem outright, and passed this project's
+mandatory independent whole-branch security review (3 Important findings found and fixed, 6 Minor
+findings triaged and either fixed or deferred with recorded reasoning) before merge. Full detail:
+`docs/task-logs/T16b.md`.
+
+**Actual next step: T17 — recipient consent, `STOP`, and the admin kill switch, rewritten for
+Telegram.** This has **not yet been planned** -- WAHA's chat-history-read mechanics no longer apply;
+Telegram's Bot API only offers `getUpdates` polling with a durably-stored offset cursor (see the
+design spec's "Inbound handling" section,
+`docs/superpowers/specs/2026-08-18-telegram-sender-design.md`, as T17's starting design context).
+Per this project's one-task-at-a-time discipline, invoke `superpowers:writing-plans` for T17 in its
+own fresh session -- do not continue T16b's session or plan file. T17 should also resolve a latent
+note from T16b's independent review: `run_daily_send`'s idempotency boundary (`recipient_key`) and
+the real delivery destination (`settings.telegram_chat_id`) are not structurally tied together yet
+-- not a live gap today (no production caller of `run_daily_send` exists), but must be addressed
+when the scheduler is wired.

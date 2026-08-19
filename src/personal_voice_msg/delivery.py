@@ -16,9 +16,9 @@ from personal_voice_msg.scheduling import (
     planned_triggers_for_date,
 )
 from personal_voice_msg.sender import (
+    TELEGRAM_API_BASE,
     SenderAmbiguous,
     SenderRejected,
-    reconcile_delivery,
     send_voice_note,
     sign_request,
 )
@@ -32,10 +32,18 @@ async def run_daily_send(
     pacific_date: date,
     embedding_path: Path,
     now: datetime,
+    *,
+    api_base: str = TELEGRAM_API_BASE,
 ) -> MessageState:
     """Advance today's delivery by one orchestration step from wherever it
     currently sits, and return its resulting state. Callers loop this
     within the send window -- see Task 11.
+
+    ``api_base`` defaults to the real Telegram API and should never be
+    passed by production code -- it exists only so tests can redirect the
+    one real network call this function can make (inside the
+    ``AUDIO_READY`` branch) at a local fake server, mirroring
+    ``send_voice_note``'s own identical parameter (Task 3).
     """
     send_trigger = next(
         trigger
@@ -63,16 +71,15 @@ async def run_daily_send(
     if state is MessageState.SENDING:
         # This process did not just set SENDING itself in this call --
         # a prior attempt (possibly a crashed process) may or may not
-        # have reached WAHA. Reclassify as ambiguous rather than guessing.
-        # Stamp this attempt with the delivery's own SENDING-entry time
-        # (durably recorded as deliveries.updated_at by the
-        # AUDIO_READY -> SENDING transition, captured here before this
-        # call overwrites it) rather than this restart's real invocation
-        # time -- otherwise the DELIVERY_UNKNOWN branch below would later
-        # anchor its reconciliation window to the restart instant, after
-        # any real WhatsApp message the crashed process's send may have
-        # actually produced, and could never find it (T16 Task 13 fix,
-        # finding F2).
+        # have reached Telegram. Reclassify as ambiguous rather than
+        # guessing. Stamp this attempt with the delivery's own
+        # SENDING-entry time (durably recorded as deliveries.updated_at
+        # by the AUDIO_READY -> SENDING transition, captured here before
+        # this call overwrites it) purely for audit visibility -- under
+        # WAHA this value also anchored a later reconciliation window
+        # (T16 Task 13 fix, finding F2); under Telegram there is nothing
+        # to reconcile against, so it now only records when the
+        # ambiguity began.
         sending_started_at = database.get_delivery_updated_at(delivery_id)
         database.record_delivery_attempt(
             delivery_id, MessageState.DELIVERY_UNKNOWN, sending_started_at
@@ -84,23 +91,15 @@ async def run_daily_send(
         state = MessageState.AUDIO_READY
 
     if state is MessageState.DELIVERY_UNKNOWN:
-        window_start = database.get_delivery_updated_at(delivery_id)
-        outcome, provider_message_id = await reconcile_delivery(
-            session, settings, window_start, now
-        )
-        if outcome is MessageState.DELIVERY_UNKNOWN:
-            return MessageState.DELIVERY_UNKNOWN  # still inconclusive
-        if outcome is MessageState.SENT:
-            database.record_delivery_attempt(
-                delivery_id, outcome, now, provider_message_id=provider_message_id
-            )
-            return MessageState.SENT
-        # outcome is AUDIO_READY: reconciliation concluded, conclusively,
-        # that nothing was ever sent. AUDIO_READY is not a valid
-        # delivery_attempts outcome (see database.py's _ATTEMPT_OUTCOMES),
-        # so this is a plain state transition, not an attempt record.
-        database.transition_delivery(delivery_id, MessageState.AUDIO_READY, now)
-        state = MessageState.AUDIO_READY
+        # Telegram's Bot API has no chat-history-read method for bots --
+        # there is nothing to reconcile against (unlike WAHA). An
+        # ambiguous outcome is terminal for the Pacific day: never
+        # auto-retried, surfaced for the owner to check, consistent with
+        # "retry only when non-delivery is certain" and "never carry a
+        # missed send into the next Pacific day" (AGENTS.md). See
+        # docs/superpowers/specs/2026-08-18-telegram-sender-design.md's
+        # "Ambiguous outcomes" section.
+        return MessageState.DELIVERY_UNKNOWN
 
     if state is MessageState.RESERVED:
         text = database.get_message_text(message_id)
@@ -122,6 +121,7 @@ async def run_daily_send(
             provider_message_id = await send_voice_note(
                 session, database, settings, audio_bytes,
                 idempotency_key, timestamp, signature, now,
+                api_base=api_base,
             )
         except SenderRejected:
             database.record_delivery_attempt(delivery_id, MessageState.FAILED, now)

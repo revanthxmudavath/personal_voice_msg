@@ -57,16 +57,17 @@ def test_run_daily_send_rejects_a_call_at_or_after_the_cutoff(tmp_path: Path) ->
 def test_run_daily_send_sending_on_entry_preserves_the_original_sending_time(
     tmp_path: Path,
 ) -> None:
-    """T16 Task 13 fix, finding F2: a delivery found already in SENDING at
-    orchestrator startup (standing in for a crashed prior process) must
-    have its crash-recovery DELIVERY_UNKNOWN attempt stamped with the
-    original SENDING-entry time, not this restart call's own real
-    invocation time -- otherwise the next DELIVERY_UNKNOWN branch's
-    reconciliation window would start after any real WhatsApp message the
-    crashed process's send may have actually produced, and could never
-    find it. This branch returns before ever calling reconcile_delivery,
-    so it needs no real WAHA/settings/session -- see the window-open
-    tests above for the same no-network pattern.
+    """T16 Task 13 fix, finding F2, carried forward under Telegram
+    (T16b Task 4): a delivery found already in SENDING at orchestrator
+    startup (standing in for a crashed prior process) must have its
+    crash-recovery DELIVERY_UNKNOWN attempt stamped with the original
+    SENDING-entry time, not this restart call's own real invocation time
+    -- the stamped time is the delivery's permanent audit record of when
+    the ambiguous send actually happened, even though DELIVERY_UNKNOWN is
+    now terminal for the day (no reconciliation exists under Telegram; see
+    Task 3/Task 4). This branch returns immediately without ever calling
+    send_voice_note, so it needs no real Telegram/settings/session -- see
+    the window-open tests above for the same no-network pattern.
     """
     database = Database(tmp_path / "state.sqlite3")
     database.migrate()
@@ -106,3 +107,49 @@ def test_run_daily_send_sending_on_entry_preserves_the_original_sending_time(
     recorded_window_start = database.get_delivery_updated_at(reservation.delivery_id)
     assert recorded_window_start == sending_entered_at
     assert recorded_window_start != restart_at
+
+
+@pytest.mark.fast
+def test_run_daily_send_returns_delivery_unknown_unresolved_with_no_reconciliation(
+    tmp_path: Path,
+) -> None:
+    """T16b: Telegram's Bot API has no chat-history-read method for bots,
+    so a delivery already in DELIVERY_UNKNOWN on entry must stay that way
+    -- terminal for the Pacific day, not auto-resolved via a reconciliation
+    call that no longer exists. This test passes `session=None` because a
+    correct implementation never touches the network for this branch at
+    all; if it did, this test would fail with an AttributeError on the
+    None session before reaching the assertion below.
+    """
+    database = Database(tmp_path / "state.sqlite3")
+    database.migrate()
+    pacific_date = date(2026, 8, 9)
+    start, _ = _send_trigger_bounds(pacific_date)
+    decision = MessageHistory(database).evaluate_and_record(
+        "A delivery-unknown terminal-state test.", start
+    )
+    assert decision.accepted
+    assert decision.recorded_message_id is not None
+    database.approve_message(decision.recorded_message_id, start)
+    recipient_key = "recipient_t16b_delivery_unknown"
+    reservation = database.reserve_next_message(recipient_key, pacific_date, start)
+    assert reservation is not None
+    database.mark_audio_ready(reservation.delivery_id, b"stale-audio-bytes", start)
+    database.transition_delivery(
+        reservation.delivery_id, MessageState.SENDING, start
+    )
+    database.record_delivery_attempt(
+        reservation.delivery_id, MessageState.DELIVERY_UNKNOWN, start
+    )
+
+    async def call() -> MessageState:
+        return await run_daily_send(
+            database, None, None, recipient_key,  # type: ignore[arg-type]
+            pacific_date, Path("unused"), start,
+        )
+
+    result = asyncio.run(call())
+
+    assert result is MessageState.DELIVERY_UNKNOWN
+    final_state = database.get_delivery_state(reservation.delivery_id)
+    assert final_state is MessageState.DELIVERY_UNKNOWN

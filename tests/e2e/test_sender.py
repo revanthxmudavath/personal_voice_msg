@@ -24,10 +24,10 @@ from personal_voice_msg.voice_enrollment import enroll_voice
 pytestmark = pytest.mark.e2e
 
 VOICE_SAMPLE_ENV = "T13_VOICE_SAMPLE"
-WAHA_SETTINGS_ENV = "T15_WAHA_SETTINGS"
+TELEGRAM_SETTINGS_ENV = "T16B_TELEGRAM_SETTINGS"
 _MISSING = [
     name
-    for name in (VOICE_SAMPLE_ENV, WAHA_SETTINGS_ENV)
+    for name in (VOICE_SAMPLE_ENV, TELEGRAM_SETTINGS_ENV)
     if name not in os.environ
 ]
 if _MISSING:
@@ -36,7 +36,7 @@ if _MISSING:
         pytest.mark.skip(
             reason=(
                 "requires a real consented test voice sample and a real "
-                f"paired WAHA session; set {', '.join(_MISSING)} "
+                f"Telegram bot token/chat id; set {', '.join(_MISSING)} "
                 "(docs/task-logs/T15.md)"
             )
         ),
@@ -51,7 +51,7 @@ def new_database(tmp_path: Path) -> Database:
 
 @pytest.fixture(scope="module")
 def settings() -> Settings:
-    return load_settings(Path(os.environ[WAHA_SETTINGS_ENV]))
+    return load_settings(Path(os.environ[TELEGRAM_SETTINGS_ENV]))
 
 
 @pytest.fixture(scope="module")

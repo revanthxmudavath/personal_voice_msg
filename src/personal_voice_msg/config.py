@@ -1,35 +1,30 @@
 from __future__ import annotations
 
 import json
-import re
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from personal_voice_msg.redaction import Redactor, SensitiveValue
 
 REQUIRED_SETTINGS = {
     "profile",
     "secret_root",
-    "recipient_file",
-    "waha_token_file",
+    "telegram_chat_id_file",
+    "telegram_bot_token_file",
     "voice_embedding_file",
-    "waha_session_file",
-    "waha_base_url",
     "sender_auth_key_file",
 }
-RECIPIENT_SETTINGS = {"profile", "phone_number"}
-E164_PHONE = re.compile(r"\+[1-9][0-9]{7,14}")
-MAX_WAHA_TOKEN_CHARACTERS = 4_096
+CHAT_ID_SETTINGS = {"profile", "telegram_chat_id"}
+MAX_TELEGRAM_BOT_TOKEN_CHARACTERS = 4_096
 MAX_SENDER_AUTH_KEY_CHARACTERS = 4_096
-# T15's WAHA deployment binds its port to loopback only (never a public
-# port -- see docs/task-logs/T15.md); real network exposure across hosts is
-# T18's territory, so the sender is only ever configured to reach WAHA on
-# the same machine.
-LOOPBACK_HOSTNAMES = {"127.0.0.1", "localhost"}
+# Telegram user/chat IDs are documented as fitting within a 52-bit signed
+# integer as of the current Bot API -- this is a sanity bound, not a
+# protocol requirement, so a real future ID near this ceiling would need
+# this constant raised, not treated as a security boundary.
+MAX_TELEGRAM_CHAT_ID = 2**52
 
 
 class ConfigurationError(ValueError):
@@ -45,20 +40,17 @@ class RuntimeProfile(StrEnum):
 @dataclass(frozen=True, slots=True)
 class Settings:
     profile: RuntimeProfile
-    recipient: SensitiveValue[str]
-    waha_token: SensitiveValue[str]
+    telegram_chat_id: SensitiveValue[int]
+    telegram_bot_token: SensitiveValue[str]
     voice_embedding: SensitiveValue[Path]
-    waha_session: SensitiveValue[Path]
-    waha_base_url: str
     sender_auth_key: SensitiveValue[str]
 
     def redactor(self) -> Redactor:
         return Redactor(
             (
-                self.recipient.reveal(),
-                self.waha_token.reveal(),
+                str(self.telegram_chat_id.reveal()),
+                self.telegram_bot_token.reveal(),
                 str(self.voice_embedding.reveal()),
-                str(self.waha_session.reveal()),
                 self.sender_auth_key.reveal(),
             )
         )
@@ -137,7 +129,7 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return document
 
 
-def _recipient(path: Path, profile: RuntimeProfile) -> str:
+def _telegram_chat_id(path: Path, profile: RuntimeProfile) -> int:
     try:
         document = json.loads(
             path.read_text(encoding="utf-8"),
@@ -147,59 +139,38 @@ def _recipient(path: Path, profile: RuntimeProfile) -> str:
         raise ConfigurationError(
             "recipient configuration is unreadable or invalid"
         ) from None
-    if not isinstance(document, dict) or set(document) != RECIPIENT_SETTINGS:
+    if not isinstance(document, dict) or set(document) != CHAT_ID_SETTINGS:
         raise ConfigurationError("recipient configuration schema is invalid")
     recipient_profile = document.get("profile")
-    phone_number = document.get("phone_number")
+    chat_id = document.get("telegram_chat_id")
     if recipient_profile != profile.value:
         raise ConfigurationError("recipient profile does not match runtime profile")
-    if not isinstance(phone_number, str) or not E164_PHONE.fullmatch(phone_number):
-        raise ConfigurationError("recipient phone number is invalid")
-    return phone_number
+    # Explicitly excludes bool: JSON `true`/`false` deserialize to Python
+    # `bool`, and `isinstance(True, int)` is True in Python, which would
+    # otherwise let a malformed `"telegram_chat_id": true` silently pass
+    # as chat_id=1.
+    if (
+        type(chat_id) is not int
+        or chat_id <= 0
+        or chat_id >= MAX_TELEGRAM_CHAT_ID
+    ):
+        raise ConfigurationError("Telegram chat id is invalid")
+    return chat_id
 
 
-def _token(path: Path) -> str:
+def _bounded_secret_text(path: Path, setting: str, max_characters: int) -> str:
     try:
-        oversized = path.stat().st_size > MAX_WAHA_TOKEN_CHARACTERS
+        oversized = path.stat().st_size > max_characters
     except OSError:
-        raise ConfigurationError("WAHA token file is unreadable") from None
+        raise ConfigurationError(f"{setting} is unreadable") from None
     if oversized:
-        raise ConfigurationError("WAHA token file is too large")
+        raise ConfigurationError(f"{setting} is too large")
     try:
-        token = path.read_text(encoding="utf-8").strip()
+        value = path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
-        raise ConfigurationError("WAHA token file is unreadable") from None
-    if not token:
-        raise ConfigurationError("WAHA token is empty")
-    return token
-
-
-def _sender_auth_key(path: Path) -> str:
-    try:
-        oversized = path.stat().st_size > MAX_SENDER_AUTH_KEY_CHARACTERS
-    except OSError:
-        raise ConfigurationError("sender auth key file is unreadable") from None
-    if oversized:
-        raise ConfigurationError("sender auth key file is too large")
-    try:
-        key = path.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError):
-        raise ConfigurationError("sender auth key file is unreadable") from None
-    if not key:
-        raise ConfigurationError("sender auth key is empty")
-    return key
-
-
-def _waha_base_url(value: str) -> str:
-    parsed = urlsplit(value)
-    if parsed.scheme not in {"http", "https"}:
-        raise ConfigurationError("WAHA base URL must use http or https")
-    if parsed.hostname not in LOOPBACK_HOSTNAMES:
-        raise ConfigurationError("WAHA base URL must be a loopback address")
-    if parsed.path not in ("", "/") or parsed.username or parsed.password:
-        raise ConfigurationError("WAHA base URL must not contain extra components")
-    if parsed.query or parsed.fragment:
-        raise ConfigurationError("WAHA base URL must not contain extra components")
+        raise ConfigurationError(f"{setting} is unreadable") from None
+    if not value:
+        raise ConfigurationError(f"{setting} is empty")
     return value
 
 
@@ -210,17 +181,16 @@ def load_settings(config_path: Path) -> Settings:
     document = read_toml(path, REQUIRED_SETTINGS)
     profile = runtime_profile(document["profile"])
     root = secret_root(path, document["secret_root"], profile)
-    recipient_path = secret_file(root, document["recipient_file"], "recipient_file")
-    token_path = secret_file(root, document["waha_token_file"], "waha_token_file")
+    chat_id_path = secret_file(
+        root, document["telegram_chat_id_file"], "telegram_chat_id_file"
+    )
+    token_path = secret_file(
+        root, document["telegram_bot_token_file"], "telegram_bot_token_file"
+    )
     embedding_path = secret_file(
         root,
         document["voice_embedding_file"],
         "voice_embedding_file",
-    )
-    session_path = secret_file(
-        root,
-        document["waha_session_file"],
-        "waha_session_file",
     )
     sender_auth_key_path = secret_file(
         root,
@@ -230,10 +200,20 @@ def load_settings(config_path: Path) -> Settings:
 
     return Settings(
         profile=profile,
-        recipient=SensitiveValue(_recipient(recipient_path, profile)),
-        waha_token=SensitiveValue(_token(token_path)),
+        telegram_chat_id=SensitiveValue(_telegram_chat_id(chat_id_path, profile)),
+        telegram_bot_token=SensitiveValue(
+            _bounded_secret_text(
+                token_path,
+                "telegram_bot_token_file",
+                MAX_TELEGRAM_BOT_TOKEN_CHARACTERS,
+            )
+        ),
         voice_embedding=SensitiveValue(embedding_path),
-        waha_session=SensitiveValue(session_path),
-        waha_base_url=_waha_base_url(document["waha_base_url"]),
-        sender_auth_key=SensitiveValue(_sender_auth_key(sender_auth_key_path)),
+        sender_auth_key=SensitiveValue(
+            _bounded_secret_text(
+                sender_auth_key_path,
+                "sender_auth_key_file",
+                MAX_SENDER_AUTH_KEY_CHARACTERS,
+            )
+        ),
     )

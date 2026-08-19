@@ -23,8 +23,8 @@ from personal_voice_msg.scheduling import (
 pytestmark = pytest.mark.e2e
 
 VOICE_SAMPLE_ENV = "T13_VOICE_SAMPLE"
-WAHA_SETTINGS_ENV = "T15_WAHA_SETTINGS"
-_MISSING = [n for n in (VOICE_SAMPLE_ENV, WAHA_SETTINGS_ENV) if n not in os.environ]
+TELEGRAM_SETTINGS_ENV = "T16B_TELEGRAM_SETTINGS"
+_MISSING = [n for n in (VOICE_SAMPLE_ENV, TELEGRAM_SETTINGS_ENV) if n not in os.environ]
 if _MISSING:
     pytestmark = [
         pytest.mark.e2e,
@@ -36,7 +36,7 @@ if _MISSING:
 
 @pytest.fixture(scope="module")
 def settings() -> Settings:
-    return load_settings(Path(os.environ[WAHA_SETTINGS_ENV]))
+    return load_settings(Path(os.environ[TELEGRAM_SETTINGS_ENV]))
 
 
 # run_daily_send now rejects any call outside the real 07:00-07:05 Pacific

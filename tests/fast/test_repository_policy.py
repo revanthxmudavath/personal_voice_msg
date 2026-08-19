@@ -234,6 +234,8 @@ def test_secret_scan_accepts_non_secret_content(tmp_path: Path) -> None:
         ("waha-token.txt", b"waha-private-test-token\n"),
         ("owner.voice.embedding", b"\x00\x01private-voice-vector\xff"),
         ("waha-session.bin", b"\x00\x01private-session-state\xff"),
+        ("telegram-token.txt", b"123456789:AAFakeTelegramBotTokenForTests12\n"),
+        ("telegram_chat_id.json", b'{"telegram_chat_id":123456789}\n'),
         ("id_ed25519", b"private-key-material"),
         ("sender-auth-key.txt", b"sender-private-test-key\n"),
         ("sender_auth_key.txt", b"sender-private-test-key\n"),
@@ -266,6 +268,17 @@ def test_secret_scan_rejects_private_key_content(tmp_path: Path) -> None:
     result = run_policy(tmp_path, "secrets")
 
     assert_failed_with(result, "private key", "deployment-notes.txt")
+
+
+@pytest.mark.fast
+def test_secret_scan_rejects_telegram_bot_token_content(tmp_path: Path) -> None:
+    planted = tmp_path / "deployment-notes.txt"
+    fake_token = "123456789:" + "A" * 35
+    planted.write_text(f"bot token: {fake_token}\n", encoding="utf-8")
+
+    result = run_policy(tmp_path, "secrets")
+
+    assert_failed_with(result, "credential", "deployment-notes.txt")
 
 
 @pytest.mark.fast
