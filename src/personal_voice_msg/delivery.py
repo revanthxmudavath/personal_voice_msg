@@ -61,7 +61,12 @@ async def run_daily_send(
             "run_daily_send can only run inside the daily send window"
         )
 
-    reservation = database.reserve_next_message(recipient_key, pacific_date, now)
+    sending_enabled = database.is_sending_enabled()
+    reservation = (
+        database.reserve_next_message(recipient_key, pacific_date, now)
+        if sending_enabled
+        else None
+    )
     if reservation is not None:
         delivery_id = reservation.delivery_id
         message_id = reservation.message_id
@@ -92,12 +97,15 @@ async def run_daily_send(
         )
         return MessageState.DELIVERY_UNKNOWN
 
-    if not database.is_sending_enabled():
+    if not sending_enabled:
         # A STOP, a blocked-by-user 403, or the admin kill switch already
         # disabled sending -- stop before any production or network work,
         # for every state this could still progress from (FAILED retry,
         # RESERVED production, AUDIO_READY send). The delivery is left
-        # exactly where it was; nothing here mutates it.
+        # exactly where it was; nothing here mutates it. (sending_enabled
+        # was read once, above, before reserve_next_message, so a fresh
+        # reservation is never made while disabled and there is no
+        # redundant second read / TOCTOU window between the two checks.)
         return state
 
     if state is MessageState.FAILED:

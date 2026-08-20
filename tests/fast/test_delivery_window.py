@@ -208,6 +208,49 @@ def test_run_daily_send_does_not_progress_a_reserved_delivery_while_disabled(
 
 
 @pytest.mark.fast
+def test_run_daily_send_does_not_reserve_a_fresh_message_while_disabled(
+    tmp_path: Path,
+) -> None:
+    """T17 review finding F1: the disabled gate must be checked BEFORE
+    reserve_next_message runs, not only after -- otherwise every call to
+    run_daily_send while sending is disabled still reserves one QUEUED
+    message (there is no RESERVED -> QUEUED transition in
+    DELIVERY_TRANSITIONS, so a fresh reservation made while disabled would
+    be permanently stranded, silently draining the approved queue). This
+    test proves no reservation is made at all: a QUEUED, approved message
+    exists with no delivery row yet, sending is disabled, and the message
+    must still be QUEUED (never RESERVED) after the call."""
+    database = Database(tmp_path / "state.sqlite3")
+    database.migrate()
+    pacific_date = date(2026, 8, 9)
+    start, _ = _send_trigger_bounds(pacific_date)
+
+    decision = MessageHistory(database).evaluate_and_record(
+        "A kill-switch fresh-reservation test.", start
+    )
+    assert decision.accepted
+    assert decision.recorded_message_id is not None
+    message_id = decision.recorded_message_id
+    database.approve_message(message_id, start)
+    assert database.get_message_state(message_id) is MessageState.QUEUED
+
+    database.disable_sending(DisableReason.ADMIN_KILL_SWITCH, start)
+    recipient_key = "recipient_t17_no_fresh_reservation"
+
+    async def call() -> MessageState:
+        return await run_daily_send(
+            database, None, None, recipient_key,  # type: ignore[arg-type]
+            pacific_date, Path("unused"), start,
+        )
+
+    result = asyncio.run(call())
+
+    assert result is MessageState.QUEUED
+    assert database.get_message_state(message_id) is MessageState.QUEUED
+    assert database.get_delivery_for_date(recipient_key, pacific_date) is None
+
+
+@pytest.mark.fast
 def test_run_daily_send_rejects_a_recipient_key_that_does_not_match_the_enrolled_chat_id(  # noqa: E501
     tmp_path: Path,
 ) -> None:
