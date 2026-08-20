@@ -194,6 +194,9 @@ T00 is complete only when:
 - Telegram Bot API behind the same-shaped internal sender boundary
   (migrated from WAHA in T16b -- see docs/task-logs/T16b.md; WAHA/self-hosted
   WhatsApp-Web automation confirmed dead, see docs/research/waha-alternatives.md)
+- Recipient consent, `STOP`, and an admin kill switch via a durable
+  `sending_control` flag plus `getUpdates` offset-cursor polling
+  (T17 -- implementation complete, pending merge; see docs/task-logs/T17.md)
 - Docker Compose on one hardened US-West cloud VPS
 - WireGuard and key-only SSH for administration
 
@@ -592,14 +595,28 @@ mandatory independent whole-branch security review (3 Important findings found a
 findings triaged and either fixed or deferred with recorded reasoning) before merge. Full detail:
 `docs/task-logs/T16b.md`.
 
-**Actual next step: T17 — recipient consent, `STOP`, and the admin kill switch, rewritten for
-Telegram.** This has **not yet been planned** -- WAHA's chat-history-read mechanics no longer apply;
-Telegram's Bot API only offers `getUpdates` polling with a durably-stored offset cursor (see the
-design spec's "Inbound handling" section,
-`docs/superpowers/specs/2026-08-18-telegram-sender-design.md`, as T17's starting design context).
-Per this project's one-task-at-a-time discipline, invoke `superpowers:writing-plans` for T17 in its
-own fresh session -- do not continue T16b's session or plan file. T17 should also resolve a latent
-note from T16b's independent review: `run_daily_send`'s idempotency boundary (`recipient_key`) and
-the real delivery destination (`settings.telegram_chat_id`) are not structurally tied together yet
--- not a live gap today (no production caller of `run_daily_send` exists), but must be addressed
-when the scheduler is wired.
+**Update (2026-08-19): T17 is functionally complete, reviewed clean at the per-task level, not yet
+merged.** The plan produced from
+`docs/superpowers/specs/2026-08-19-t17-telegram-consent-stop-killswitch-design.md` (5 code/test
+tasks plus this documentation task,
+`docs/superpowers/plans/2026-08-19-t17-telegram-consent-stop-killswitch.md`) added `SCHEMA_V8`'s
+`sending_control`/`sending_control_events`/`telegram_inbound_offset` tables and a `DisableReason`
+enum; `consent.py`'s `getUpdates`-polling `poll_inbound_stop` (offset-cursor based, since Telegram's
+Bot API has no chat-history-read method for bots); `sender.py`'s `SenderBlocked` exception for the
+specific blocked-by-user 403 (with a fix round widening its exception handling to malformed
+bodies); and `delivery.py`'s disabled-sending gate in `run_daily_send` (checked before any
+production/network work, so the kill switch stops even an already-`RESERVED` delivery), its
+`SenderBlocked` handler, and a fail-closed `recipient_key`/`chat_id` structural tie via
+`recipient_key_for_chat_id` -- resolving the T16b-flagged decoupling gap. Three disable triggers
+now durably turn off sending: an exact `STOP` from the enrolled `chat_id`, Telegram's blocked-by-user
+403, and the admin kill switch (an operator calling `disable_sending(DisableReason.ADMIN_KILL_SWITCH)`
+directly) -- all recorded to the `sending_control_events` audit trail and all surviving restart via
+SQLite. Each task was reviewed clean (one fix round on Task 3, described above). Full detail,
+including per-task review notes and the fresh verification suite run: `docs/task-logs/T17.md`.
+
+**Actual next step: this project's mandatory independent whole-branch security review of the full
+T17 diff** (`AGENTS.md` §Agent collaboration rules: "Security-sensitive tasks T06, T15, T16, T17,
+and T18 require independent review"), to be performed by the controlling session, not
+self-approved. Once that review passes (with any confirmed findings fixed and re-reviewed), open a
+PR and merge per this project's standard GitHub-PR workflow. After merge, T18 (cloud and container
+hardening) is next per the backlog order above.
