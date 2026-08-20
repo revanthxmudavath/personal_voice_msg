@@ -101,6 +101,57 @@ class _HangingServer:
         self._socket.close()
 
 
+class _FixedStatusServer:
+    """Accepts one connection, drains whatever the client sends until it
+    goes quiet, then responds with a fixed HTTP status line and body, then
+    closes -- a real raw socket, no aiohttp/Telegram server semantics
+    beyond the status line and body text. See
+    tests/security/test_sender_error_taxonomy.py for the identical
+    pattern; duplicated here rather than shared, matching this file's own
+    existing per-file-scoped fake-server convention (see _HangingServer
+    above)."""
+
+    def __init__(self, status_line: str, body: bytes) -> None:
+        self._status_line = status_line
+        self._body = body
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._socket.bind(("127.0.0.1", 0))
+        self._socket.listen(1)
+        self.port = self._socket.getsockname()[1]
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._accept_and_respond, daemon=True)
+        self._thread.start()
+
+    def _accept_and_respond(self) -> None:
+        self._socket.settimeout(1.0)
+        while not self._stop.is_set():
+            try:
+                connection, _ = self._socket.accept()
+            except TimeoutError:
+                continue
+            try:
+                connection.settimeout(2.0)
+                try:
+                    while connection.recv(65_536):
+                        pass
+                except (TimeoutError, OSError):
+                    pass
+                response = (
+                    f"{self._status_line}\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(self._body)}\r\n"
+                    "Connection: close\r\n\r\n"
+                ).encode() + self._body
+                connection.sendall(response)
+            finally:
+                connection.close()
+            return
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._socket.close()
+
+
 # Not the independent proof of "no duplicate send" on its own -- under
 # this design DELIVERY_TRANSITIONS[SENT] = set() makes a second 'sent'
 # row structurally impossible once one exists (database.py), so this
@@ -259,4 +310,64 @@ def test_a_real_timeout_during_send_becomes_delivery_unknown_and_never_retries(
 
     second_result = asyncio.run(resume_no_network())
     assert second_result is MessageState.DELIVERY_UNKNOWN
+    assert _sent_count(database_path, reservation.delivery_id) == (0,)
+
+
+def test_a_real_blocked_by_user_403_disables_sending_and_fails_the_delivery(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """T17 review finding F3: nothing in the suite previously drove
+    run_daily_send all the way to AUDIO_READY, got a real 403
+    'blocked by the user' response, and asserted that
+    disable_sending(BLOCKED_BY_USER) actually fires and the delivery ends
+    up FAILED. Real fault injection through the actual production
+    orchestrator via the api_base override, mirroring
+    test_a_real_timeout_during_send_becomes_delivery_unknown_and_never_retries
+    above -- a real local server, not a hand-reproduced imitation of
+    delivery.py's except SenderBlocked branch.
+    """
+    database_path = tmp_path / "state.sqlite3"
+    database = Database(database_path)
+    now = _in_send_window(PACIFIC_DATE)
+    text = (
+        f"A real-blocked-403 fault injection test at {datetime.now(UTC).timestamp()}."
+    )
+    approved_message(database, text, now)
+    recipient_key = recipient_key_for_chat_id(settings.telegram_chat_id.reveal())
+    reservation = database.reserve_next_message(recipient_key, PACIFIC_DATE, now)
+    assert reservation is not None
+    embedding_path = settings.voice_embedding.reveal()
+    temp_destination = tmp_path / f"t17-blocked-{reservation.delivery_id}.ogg"
+    produce_voice_note(
+        database, reservation.delivery_id, embedding_path, text, temp_destination, now
+    )
+
+    assert database.is_sending_enabled() is True
+
+    server = _FixedStatusServer(
+        "HTTP/1.1 403 Forbidden",
+        body=(
+            b'{"ok":false,"error_code":403,'
+            b'"description":"Forbidden: bot was blocked by the user"}'
+        ),
+    )
+    try:
+        async def attempt() -> MessageState:
+            async with aiohttp.ClientSession() as session:
+                return await run_daily_send(
+                    database, settings, session, recipient_key,
+                    PACIFIC_DATE, embedding_path, now,
+                    api_base=f"http://127.0.0.1:{server.port}",
+                )
+
+        result = asyncio.run(attempt())
+    finally:
+        server.stop()
+
+    assert result is MessageState.FAILED
+    assert (
+        database.get_delivery_state(reservation.delivery_id)
+        is MessageState.FAILED
+    )
+    assert database.is_sending_enabled() is False
     assert _sent_count(database_path, reservation.delivery_id) == (0,)
