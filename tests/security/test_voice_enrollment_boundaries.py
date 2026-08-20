@@ -14,6 +14,7 @@ FORBIDDEN_MODULES = {
     "personal_voice_msg.voice_enrollment",
     "personal_voice_msg.sender",
     "personal_voice_msg.delivery",
+    "personal_voice_msg.consent",
 }
 FORBIDDEN_CONFIG_IMPORTS = {"Settings", "load_settings"}
 # T15 extends this boundary to the sender's own secrets, per AGENTS.md's
