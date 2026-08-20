@@ -29,17 +29,23 @@ ENROLLED_CHAT_ID = 424242
 
 pytestmark = pytest.mark.security
 
-if VOICE_SAMPLE_ENV not in os.environ:
-    pytestmark = [
-        pytest.mark.security,
-        pytest.mark.skip(
-            reason=(
-                "requires a real consented test voice sample so "
-                "produce_voice_note's real TTS/FFmpeg pipeline has "
-                f"something real to synthesize; set {VOICE_SAMPLE_ENV}"
-            )
-        ),
-    ]
+# Only the two tests that actually drive produce_voice_note's real
+# TTS/FFmpeg pipeline need a real consented voice sample. The STOP test
+# below never reaches synthesis (sending is disabled before the RESERVED
+# branch that calls produce_voice_note -- see delivery.py's
+# `if not sending_enabled: return state` early return) and must run
+# everywhere so this branch's core security property -- a STOP received
+# during a call's own poll blocks that same call's send -- is not skipped
+# in every environment without a real sample, including this sandbox and
+# CI.
+requires_voice_sample = pytest.mark.skipif(
+    VOICE_SAMPLE_ENV not in os.environ,
+    reason=(
+        "requires a real consented test voice sample so "
+        "produce_voice_note's real TTS/FFmpeg pipeline has "
+        f"something real to synthesize; set {VOICE_SAMPLE_ENV}"
+    ),
+)
 
 
 class _RoutingServer:
@@ -50,9 +56,12 @@ class _RoutingServer:
     aiohttp/Telegram server semantics beyond the status line, headers,
     and body), extracts the request path from the first line, and
     responds with whichever of ``routes`` matches a substring of that
-    path. Records every path seen, in order, so a test can assert not
-    just what each endpoint returned but the order -- or absence -- of
-    the calls that reached it.
+    path. Records every route seen, in order (with any leading
+    ``/bot<token>`` segment stripped -- see ``_route_only``, so a real
+    bot token used during Task 5's live verification never ends up in
+    ``paths_seen``, and thus never in a pytest failure message), so a
+    test can assert not just what each endpoint returned but the order
+    -- or absence -- of the calls that reached it.
     """
 
     def __init__(self, routes: dict[str, tuple[str, bytes]]) -> None:
@@ -71,7 +80,10 @@ class _RoutingServer:
         while not self._stop.is_set():
             try:
                 connection, _ = self._socket.accept()
-            except TimeoutError:
+            except (TimeoutError, OSError):
+                # OSError covers accept() unblocking because stop()
+                # closed the listening socket out from under it -- not a
+                # real fault, just this loop's own shutdown signal.
                 continue
             try:
                 connection.settimeout(2.0)
@@ -86,7 +98,7 @@ class _RoutingServer:
                     pass
                 request_line = buffer.split(b"\r\n", 1)[0].decode(errors="replace")
                 path = request_line.split(" ")[1] if " " in request_line else ""
-                self.paths_seen.append(path)
+                self.paths_seen.append(self._route_only(path))
                 status_line, body = self._match(path)
                 response = (
                     f"{status_line}\r\n"
@@ -103,6 +115,18 @@ class _RoutingServer:
             if substring in path:
                 return response
         return ("HTTP/1.1 404 Not Found", b'{"ok":false}')
+
+    @staticmethod
+    def _route_only(path: str) -> str:
+        """Strip a leading ``/bot<token>`` segment, if present, so the
+        bot token never appears in ``paths_seen``. Routing itself
+        (``_match``) still uses the full, unredacted ``path``."""
+        marker = "/bot"
+        if not path.startswith(marker):
+            return path
+        remainder = path[len(marker):]
+        slash = remainder.find("/")
+        return remainder[slash:] if slash != -1 else path
 
     def stop(self) -> None:
         self._stop.set()
@@ -144,6 +168,7 @@ def _approved_message_in_window(database: Database, text: str) -> tuple[date, da
     return pacific_date, now
 
 
+@requires_voice_sample
 def test_a_non_stop_poll_is_followed_by_a_real_send_in_order(
     embedding_path: Path, tmp_path: Path
 ) -> None:
@@ -184,12 +209,20 @@ def test_a_non_stop_poll_is_followed_by_a_real_send_in_order(
 
 
 def test_a_stop_received_in_the_same_call_prevents_the_send_that_would_follow(
-    embedding_path: Path, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     """The offset-cursor poll happens before run_daily_send re-reads
     is_sending_enabled -- a STOP arriving in this call's own poll must
     already have taken effect by the time the send would otherwise be
-    attempted, proven here by the sendVoice route never being hit."""
+    attempted, proven here by the sendVoice route never being hit.
+
+    Deliberately does not depend on the module's ``embedding_path``
+    fixture (which requires a real T13_VOICE_SAMPLE): once sending is
+    disabled, run_daily_send's `if not sending_enabled: return state`
+    early return (delivery.py) fires before the RESERVED branch that
+    would call produce_voice_note, so this path never opens the
+    embedding file. A path that doesn't exist is enough."""
+    embedding_path = tmp_path / "unused_embedding.safetensors"
     database = Database(tmp_path / "state.sqlite3")
     database.migrate()
     settings = _settings(embedding_path)
@@ -240,6 +273,7 @@ def test_a_stop_received_in_the_same_call_prevents_the_send_that_would_follow(
     assert "getUpdates" in server.paths_seen[0]
 
 
+@requires_voice_sample
 def test_a_malformed_getupdates_response_does_not_prevent_the_send_that_follows(
     embedding_path: Path, tmp_path: Path
 ) -> None:

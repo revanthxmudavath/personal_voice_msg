@@ -156,7 +156,7 @@ async def run_daily_entrypoint(
     embedding_path: Path,
     now: datetime,
     *,
-    api_base: str = TELEGRAM_API_BASE,  # this module's own constant, same value
+    api_base: str = TELEGRAM_API_BASE,  # imported from sender.py, not a fresh module-local constant -- avoids a third duplicate copy that could drift
 ) -> MessageState | None
 ```
 
