@@ -329,3 +329,68 @@ def test_a_200_response_with_malformed_result_raises_sender_ambiguous(
             )
     finally:
         server.stop()
+
+
+def test_a_blocked_by_user_403_raises_sender_blocked_not_generic_rejected(
+    valid_audio_bytes: bytes, tmp_path: Path
+) -> None:
+    """T17: Telegram's specific blocked-by-user 403 description must be
+    distinguishable from any other definite rejection, so the caller can
+    treat it as a durable stop signal alongside STOP."""
+    from personal_voice_msg.sender import SenderBlocked
+
+    server = _FixedStatusServer(
+        "HTTP/1.1 403 Forbidden",
+        body=(
+            b'{"ok":false,"error_code":403,'
+            b'"description":"Forbidden: bot was blocked by the user"}'
+        ),
+    )
+    try:
+        settings = _settings(tmp_path)
+        database = Database(tmp_path / "state.sqlite3")
+        database.migrate()
+
+        with pytest.raises(SenderBlocked):
+            asyncio.run(
+                _send(
+                    settings,
+                    valid_audio_bytes,
+                    database,
+                    f"http://127.0.0.1:{server.port}",
+                )
+            )
+    finally:
+        server.stop()
+
+
+def test_a_different_403_reason_raises_plain_sender_rejected_not_blocked(
+    valid_audio_bytes: bytes, tmp_path: Path
+) -> None:
+    """A 403 for a different reason (e.g. a revoked token) must not be
+    misclassified as blocked-by-user -- exact type check, not isinstance,
+    since SenderBlocked is itself a SenderRejected subclass."""
+    from personal_voice_msg.sender import SenderBlocked
+
+    server = _FixedStatusServer(
+        "HTTP/1.1 403 Forbidden",
+        body=b'{"ok":false,"error_code":403,"description":"Forbidden: unauthorized"}',
+    )
+    try:
+        settings = _settings(tmp_path)
+        database = Database(tmp_path / "state.sqlite3")
+        database.migrate()
+
+        with pytest.raises(SenderRejected) as exc_info:
+            asyncio.run(
+                _send(
+                    settings,
+                    valid_audio_bytes,
+                    database,
+                    f"http://127.0.0.1:{server.port}",
+                )
+            )
+        assert type(exc_info.value) is SenderRejected
+        assert not isinstance(exc_info.value, SenderBlocked)
+    finally:
+        server.stop()

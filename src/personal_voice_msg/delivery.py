@@ -8,7 +8,12 @@ import aiohttp
 
 from personal_voice_msg.audio_pipeline import produce_voice_note
 from personal_voice_msg.config import Settings
-from personal_voice_msg.database import Database, MessageState
+from personal_voice_msg.database import (
+    Database,
+    DisableReason,
+    MessageState,
+    recipient_key_for_chat_id,
+)
 from personal_voice_msg.scheduling import (
     ScheduleKind,
     TriggerStatus,
@@ -18,6 +23,7 @@ from personal_voice_msg.scheduling import (
 from personal_voice_msg.sender import (
     TELEGRAM_API_BASE,
     SenderAmbiguous,
+    SenderBlocked,
     SenderRejected,
     send_voice_note,
     sign_request,
@@ -55,7 +61,12 @@ async def run_daily_send(
             "run_daily_send can only run inside the daily send window"
         )
 
-    reservation = database.reserve_next_message(recipient_key, pacific_date, now)
+    sending_enabled = database.is_sending_enabled()
+    reservation = (
+        database.reserve_next_message(recipient_key, pacific_date, now)
+        if sending_enabled
+        else None
+    )
     if reservation is not None:
         delivery_id = reservation.delivery_id
         message_id = reservation.message_id
@@ -86,6 +97,17 @@ async def run_daily_send(
         )
         return MessageState.DELIVERY_UNKNOWN
 
+    if not sending_enabled:
+        # A STOP, a blocked-by-user 403, or the admin kill switch already
+        # disabled sending -- stop before any production or network work,
+        # for every state this could still progress from (FAILED retry,
+        # RESERVED production, AUDIO_READY send). The delivery is left
+        # exactly where it was; nothing here mutates it. (sending_enabled
+        # was read once, above, before reserve_next_message, so a fresh
+        # reservation is never made while disabled and there is no
+        # redundant second read / TOCTOU window between the two checks.)
+        return state
+
     if state is MessageState.FAILED:
         database.transition_delivery(delivery_id, MessageState.AUDIO_READY, now)
         state = MessageState.AUDIO_READY
@@ -110,6 +132,12 @@ async def run_daily_send(
         state = MessageState.AUDIO_READY
 
     if state is MessageState.AUDIO_READY:
+        if recipient_key != recipient_key_for_chat_id(
+            settings.telegram_chat_id.reveal()
+        ):
+            raise ValueError(
+                "recipient_key does not match the enrolled chat id"
+            )
         audio_bytes = database.get_audio_data(delivery_id)
         database.transition_delivery(delivery_id, MessageState.SENDING, now)
         idempotency_key = f"delivery-{delivery_id}"
@@ -123,6 +151,10 @@ async def run_daily_send(
                 idempotency_key, timestamp, signature, now,
                 api_base=api_base,
             )
+        except SenderBlocked:
+            database.disable_sending(DisableReason.BLOCKED_BY_USER, now)
+            database.record_delivery_attempt(delivery_id, MessageState.FAILED, now)
+            return MessageState.FAILED
         except SenderRejected:
             database.record_delivery_attempt(delivery_id, MessageState.FAILED, now)
             return MessageState.FAILED

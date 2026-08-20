@@ -42,6 +42,16 @@ class SenderRejected(SenderError):
     definite rejection. Safe to retry immediately."""
 
 
+class SenderBlocked(SenderRejected):
+    """Telegram's specific 403 'Forbidden: bot was blocked by the user'
+    response -- the closest thing to a proactive block signal Telegram
+    offers, though still necessarily reactive (learned only by attempting
+    a send). Callers must treat this as a durable stop signal alongside
+    STOP -- see delivery.py and
+    docs/superpowers/specs/2026-08-19-t17-telegram-consent-stop-killswitch-design.md.
+    """
+
+
 class SenderAmbiguous(SenderError):
     """Telegram may or may not have processed the request -- either no
     HTTP response was received at all, or Telegram returned a status
@@ -100,6 +110,20 @@ def _describe_rejection(body: bytes) -> str:
     if retry_after is not None:
         detail += f" retry_after={retry_after}"
     return detail
+
+
+def _is_blocked_by_user(body: bytes) -> bool:
+    """True only for Telegram's specific blocked-by-user 403 description
+    -- a narrow, exact substring check, not a general 403 assumption
+    (other 403 reasons exist in principle, even for a private one-to-one
+    chat)."""
+
+    try:
+        payload = json.loads(body)
+        description = payload.get("description")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(description, str) and "blocked by the user" in description
 
 
 async def send_voice_note(
@@ -187,6 +211,10 @@ async def send_voice_note(
     # malformed or oversized body from here on is never re-classified as
     # "no response received"; it's judged against the status code that
     # already arrived.
+    if status == 403 and _is_blocked_by_user(body):
+        raise SenderBlocked(
+            f"Telegram rejected the request: {_describe_rejection(body)}"
+        )
     if status in _DEFINITE_REJECTION_STATUS_CODES:
         raise SenderRejected(
             f"Telegram rejected the request: {_describe_rejection(body)}"

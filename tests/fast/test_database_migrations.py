@@ -24,6 +24,9 @@ EXPECTED_TABLES = {
     "message_rejections",
     "sender_auth_nonces",
     "delivery_attempts",
+    "sending_control",
+    "sending_control_events",
+    "telegram_inbound_offset",
 }
 
 # Deliveries table definition without audio_data column (for v6 and earlier downgrades)
@@ -78,12 +81,15 @@ def downgrade_current_database_to_v2(path: Path) -> None:
         connection.execute("DROP TABLE IF EXISTS message_rejections")
         connection.execute("DROP TABLE IF EXISTS daily_runs")
         connection.execute("DROP TABLE IF EXISTS delivery_attempts")
+        connection.execute("DROP TABLE IF EXISTS sending_control")
+        connection.execute("DROP TABLE IF EXISTS sending_control_events")
+        connection.execute("DROP TABLE IF EXISTS telegram_inbound_offset")
         _strip_audio_data_column(connection, "deliveries_v7")
         connection.execute(
             "DROP INDEX IF EXISTS message_history_normalized_hash_unique_idx"
         )
         connection.execute(
-            "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7)"
+            "DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8)"
         )
 
 
@@ -93,9 +99,12 @@ def downgrade_current_database_to_v3(path: Path) -> None:
         connection.execute("DROP TABLE IF EXISTS message_rejections")
         connection.execute("DROP TABLE IF EXISTS daily_runs")
         connection.execute("DROP TABLE IF EXISTS delivery_attempts")
+        connection.execute("DROP TABLE IF EXISTS sending_control")
+        connection.execute("DROP TABLE IF EXISTS sending_control_events")
+        connection.execute("DROP TABLE IF EXISTS telegram_inbound_offset")
         _strip_audio_data_column(connection, "deliveries_v7")
         connection.execute(
-            "DELETE FROM schema_migrations WHERE version IN (4, 5, 6, 7)"
+            "DELETE FROM schema_migrations WHERE version IN (4, 5, 6, 7, 8)"
         )
 
 
@@ -104,23 +113,42 @@ def downgrade_current_database_to_v4(path: Path) -> None:
         connection.execute("DROP TABLE IF EXISTS sender_auth_nonces")
         connection.execute("DROP TABLE IF EXISTS message_rejections")
         connection.execute("DROP TABLE IF EXISTS delivery_attempts")
+        connection.execute("DROP TABLE IF EXISTS sending_control")
+        connection.execute("DROP TABLE IF EXISTS sending_control_events")
+        connection.execute("DROP TABLE IF EXISTS telegram_inbound_offset")
         _strip_audio_data_column(connection, "deliveries_v7")
-        connection.execute("DELETE FROM schema_migrations WHERE version IN (5, 6, 7)")
+        connection.execute(
+            "DELETE FROM schema_migrations WHERE version IN (5, 6, 7, 8)"
+        )
 
 
 def downgrade_current_database_to_v5(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE IF EXISTS sender_auth_nonces")
         connection.execute("DROP TABLE IF EXISTS delivery_attempts")
+        connection.execute("DROP TABLE IF EXISTS sending_control")
+        connection.execute("DROP TABLE IF EXISTS sending_control_events")
+        connection.execute("DROP TABLE IF EXISTS telegram_inbound_offset")
         _strip_audio_data_column(connection, "deliveries_v7")
-        connection.execute("DELETE FROM schema_migrations WHERE version IN (6, 7)")
+        connection.execute("DELETE FROM schema_migrations WHERE version IN (6, 7, 8)")
 
 
 def downgrade_current_database_to_v6(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE IF EXISTS delivery_attempts")
+        connection.execute("DROP TABLE IF EXISTS sending_control")
+        connection.execute("DROP TABLE IF EXISTS sending_control_events")
+        connection.execute("DROP TABLE IF EXISTS telegram_inbound_offset")
         _strip_audio_data_column(connection, "deliveries_v6")
-        connection.execute("DELETE FROM schema_migrations WHERE version = 7")
+        connection.execute("DELETE FROM schema_migrations WHERE version IN (7, 8)")
+
+
+def downgrade_current_database_to_v7(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE IF EXISTS sending_control")
+        connection.execute("DROP TABLE IF EXISTS sending_control_events")
+        connection.execute("DROP TABLE IF EXISTS telegram_inbound_offset")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 8")
 
 
 @pytest.mark.fast
@@ -162,7 +190,7 @@ def test_version_six_database_upgrades_to_delivery_attempts_without_data_loss(
             row[1]
             for row in connection.execute("PRAGMA table_info(deliveries)")
         }
-    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
     assert preserved == [
         (
             "migration_probe",
@@ -173,6 +201,59 @@ def test_version_six_database_upgrades_to_delivery_attempts_without_data_loss(
     ]
     assert delivery_attempts_table == (1,)
     assert "audio_data" in deliveries_columns
+
+
+@pytest.mark.fast
+def test_version_seven_database_upgrades_to_sending_control_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "version-seven.sqlite3"
+    database = Database(database_path)
+    database.migrate()
+    downgrade_current_database_to_v7(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO runs (run_kind, pacific_date, state, started_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "migration_probe",
+                "2026-08-19",
+                "preserve-me",
+                "2026-08-19T13:50:00+00:00",
+            ),
+        )
+
+    database.migrate()
+
+    with sqlite3.connect(database_path) as connection:
+        versions = connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        preserved = connection.execute(
+            "SELECT run_kind, pacific_date, state, started_at FROM runs"
+        ).fetchall()
+        new_tables = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name IN "
+            "('sending_control', 'sending_control_events', "
+            "'telegram_inbound_offset') ORDER BY name"
+        ).fetchall()
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
+    assert preserved == [
+        (
+            "migration_probe",
+            "2026-08-19",
+            "preserve-me",
+            "2026-08-19T13:50:00+00:00",
+        )
+    ]
+    assert new_tables == [
+        ("sending_control",),
+        ("sending_control_events",),
+        ("telegram_inbound_offset",),
+    ]
 
 
 @pytest.mark.fast
@@ -197,7 +278,7 @@ def test_rerunning_migration_is_idempotent(tmp_path: Path) -> None:
         versions = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
 
 
 @pytest.mark.fast
@@ -525,7 +606,7 @@ def test_version_three_database_upgrades_to_daily_runs_without_data_loss(
             "SELECT 1 FROM sqlite_master "
             "WHERE type = 'table' AND name = 'daily_runs'"
         ).fetchone()
-    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
     assert preserved == [
         (
             "migration_probe",
@@ -577,7 +658,7 @@ def test_version_five_database_upgrades_to_sender_auth_nonces_without_data_loss(
             "SELECT 1 FROM sqlite_master "
             "WHERE type = 'table' AND name = 'sender_auth_nonces'"
         ).fetchone()
-    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
     assert preserved == [
         (
             "migration_probe",
@@ -629,7 +710,7 @@ def test_version_four_database_upgrades_to_message_rejections_without_data_loss(
             "SELECT 1 FROM sqlite_master "
             "WHERE type = 'table' AND name = 'message_rejections'"
         ).fetchone()
-    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
     assert preserved == [
         (
             "migration_probe",
@@ -659,7 +740,7 @@ def test_version_two_database_upgrades_to_unique_normalized_hashes(
         indexes = connection.execute(
             "PRAGMA index_list(message_history)"
         ).fetchall()
-    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
     assert any(
         row[1] == "message_history_normalized_hash_unique_idx" and row[2] == 1
         for row in indexes

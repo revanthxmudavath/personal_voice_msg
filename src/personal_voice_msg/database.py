@@ -38,6 +38,12 @@ class DailyRunState(StrEnum):
     COMPLETED = "completed"
 
 
+class DisableReason(StrEnum):
+    STOP_COMMAND = "stop_command"
+    BLOCKED_BY_USER = "blocked_by_user"
+    ADMIN_KILL_SWITCH = "admin_kill_switch"
+
+
 CONTENT_TRANSITIONS = {
     MessageState.DISCOVERED: MessageState.VALIDATED,
     MessageState.VALIDATED: MessageState.APPROVED,
@@ -67,8 +73,18 @@ _ATTEMPT_OUTCOMES = {
     MessageState.FAILED,
     MessageState.DELIVERY_UNKNOWN,
 }
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 OPAQUE_RECIPIENT_KEY = re.compile(r"recipient_[A-Za-z0-9][A-Za-z0-9_-]{2,119}")
+
+
+def recipient_key_for_chat_id(chat_id: int) -> str:
+    """Canonical recipient_key for a given enrolled telegram_chat_id --
+    ties run_daily_send's idempotency boundary to the real delivery
+    destination. See
+    docs/superpowers/specs/2026-08-19-t17-telegram-consent-stop-killswitch-design.md.
+    """
+
+    return f"recipient_telegram_{chat_id}"
 
 
 class DatabaseError(RuntimeError):
@@ -356,6 +372,42 @@ _v7_deliveries_sql = (  # noqa: E501
 )
 EXPECTED_SCHEMA_V7_OBJECTS[("table", "deliveries")] = _v7_deliveries_sql
 
+# T17's durable sending-control state, audit trail, and inbound-poll offset
+# cursor. See: docs/superpowers/specs/
+# 2026-08-19-t17-telegram-consent-stop-killswitch-design.md
+SCHEMA_V8_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS sending_control (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        enabled INTEGER NOT NULL,
+        reason TEXT,
+        changed_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sending_control_events (
+        id INTEGER PRIMARY KEY,
+        enabled INTEGER NOT NULL,
+        reason TEXT,
+        note TEXT,
+        changed_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS telegram_inbound_offset (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        next_offset INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+)
+EXPECTED_SCHEMA_V8_OBJECTS = {
+    **EXPECTED_SCHEMA_V7_OBJECTS,
+    ("table", "sending_control"): SCHEMA_V8_STATEMENTS[0],
+    ("table", "sending_control_events"): SCHEMA_V8_STATEMENTS[1],
+    ("table", "telegram_inbound_offset"): SCHEMA_V8_STATEMENTS[2],
+}
+
 
 def _timestamp(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
@@ -470,7 +522,8 @@ class Database:
                 {1, 2, 3, 4},
                 {1, 2, 3, 4, 5},
                 {1, 2, 3, 4, 5, 6},
-                {1, 2, 3, 4, 5, 6, CURRENT_SCHEMA_VERSION},
+                {1, 2, 3, 4, 5, 6, 7},
+                {1, 2, 3, 4, 5, 6, 7, CURRENT_SCHEMA_VERSION},
             ):
                 raise MigrationError("database has an unknown migration version")
             connection.execute("PRAGMA journal_mode = WAL")
@@ -485,7 +538,8 @@ class Database:
                 {1, 2, 3, 4},
                 {1, 2, 3, 4, 5},
                 {1, 2, 3, 4, 5, 6},
-                {1, 2, 3, 4, 5, 6, CURRENT_SCHEMA_VERSION},
+                {1, 2, 3, 4, 5, 6, 7},
+                {1, 2, 3, 4, 5, 6, 7, CURRENT_SCHEMA_VERSION},
             ):
                 raise MigrationError("database has an unknown migration version")
             if not versions:
@@ -587,10 +641,20 @@ class Database:
                     connection.execute(statement)
                 connection.execute(
                     "INSERT INTO schema_migrations (version) VALUES (?)",
+                    (7,),
+                )
+                versions = {1, 2, 3, 4, 5, 6, 7}
+
+            _validate_schema(connection, EXPECTED_SCHEMA_V7_OBJECTS)
+            if versions == {1, 2, 3, 4, 5, 6, 7}:
+                for statement in SCHEMA_V8_STATEMENTS:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?)",
                     (CURRENT_SCHEMA_VERSION,),
                 )
 
-            _validate_schema(connection, EXPECTED_SCHEMA_V7_OBJECTS)
+            _validate_schema(connection, EXPECTED_SCHEMA_V8_OBJECTS)
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -1371,3 +1435,107 @@ class Database:
                 raise ReplayDetected(
                     "sender-auth request was already recorded"
                 ) from None
+
+    def disable_sending(self, reason: DisableReason, now: datetime) -> None:
+        """Durably disable sending. Idempotent: a no-op if sending is
+        already disabled -- the first trigger's reason and timestamp are
+        preserved as the audit record; a repeated trigger (a second STOP,
+        a blocked-by-user 403 on a later day, the admin kill switch after
+        STOP already fired) doesn't overwrite it or spam the event log.
+        """
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT enabled FROM sending_control WHERE id = 1"
+            ).fetchone()
+            if row is not None and not bool(row[0]):
+                return
+            connection.execute(
+                """
+                INSERT INTO sending_control (id, enabled, reason, changed_at)
+                VALUES (1, 0, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    enabled = 0, reason = excluded.reason,
+                    changed_at = excluded.changed_at
+                """,
+                (reason.value, timestamp),
+            )
+            connection.execute(
+                """
+                INSERT INTO sending_control_events
+                    (enabled, reason, note, changed_at)
+                VALUES (0, ?, NULL, ?)
+                """,
+                (reason.value, timestamp),
+            )
+
+    def enable_sending(self, note: str, now: datetime) -> None:
+        """The audited re-enable procedure: requires a non-empty note
+        durably recording why. Idempotent: a no-op if sending is already
+        enabled. See
+        docs/superpowers/specs/2026-08-19-t17-telegram-consent-stop-killswitch-design.md.
+        """
+        if not note.strip():
+            raise ValueError("enable_sending requires a non-empty note")
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT enabled FROM sending_control WHERE id = 1"
+            ).fetchone()
+            if row is None or bool(row[0]):
+                return
+            connection.execute(
+                """
+                INSERT INTO sending_control (id, enabled, reason, changed_at)
+                VALUES (1, 1, NULL, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    enabled = 1, reason = NULL, changed_at = excluded.changed_at
+                """,
+                (timestamp,),
+            )
+            connection.execute(
+                """
+                INSERT INTO sending_control_events
+                    (enabled, reason, note, changed_at)
+                VALUES (1, NULL, ?, ?)
+                """,
+                (note, timestamp),
+            )
+
+    def is_sending_enabled(self) -> bool:
+        """A missing row means sending was never disabled -- the default
+        enabled state, matching a fresh SCHEMA_V8 migration."""
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT enabled FROM sending_control WHERE id = 1"
+            ).fetchone()
+        finally:
+            connection.close()
+        return True if row is None else bool(row[0])
+
+    def get_telegram_inbound_offset(self) -> int | None:
+        """None means no getUpdates poll has ever completed -- the caller
+        should omit Telegram's offset parameter on the next call."""
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT next_offset FROM telegram_inbound_offset WHERE id = 1"
+            ).fetchone()
+        finally:
+            connection.close()
+        return None if row is None else int(row[0])
+
+    def set_telegram_inbound_offset(self, offset: int, now: datetime) -> None:
+        timestamp = _timestamp(now)
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO telegram_inbound_offset (id, next_offset, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    next_offset = excluded.next_offset,
+                    updated_at = excluded.updated_at
+                """,
+                (offset, timestamp),
+            )
