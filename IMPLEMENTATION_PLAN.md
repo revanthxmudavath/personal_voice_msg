@@ -891,9 +891,61 @@ Done when opt-out, the blocked-by-user signal, and kill-switch behavior all surv
 cannot be bypassed. Plan this task in its own `writing-plans` session once T16b ships — do not plan
 it now, per this project's one-task-at-a-time discipline.
 
+### T17b — Daily-send entrypoint and live STOP wiring
+
+Dependencies: T17
+
+Not on `AGENTS.md`'s original mandatory-review list, but independent review required anyway per the
+T16b precedent — this task loads real secrets, derives real production identifiers, and drives a
+real send through a new production-facing entry surface.
+
+Follow-on task inserted between T17 and T18, same shape as T16b sitting between T16 and T17: `
+poll_inbound_stop` (`consent.py`, T17) and `run_daily_send` (`delivery.py`, T16b) had no caller
+anywhere in the codebase — this task gives them their first real caller, closing that gap narrowly.
+
+Full design: `docs/superpowers/specs/2026-08-20-t17b-daily-send-entrypoint-design.md`. Detailed
+task-by-task plan: `docs/superpowers/plans/2026-08-20-t17b-daily-send-entrypoint.md`.
+
+Red tests:
+
+- a call outside the `DAILY_SEND` window is a pure no-op — no database write, no network call.
+- a normal (non-STOP) poll is followed by a real send, in the correct order, within one call.
+- a STOP received during that same call's own poll disables sending before the send that would
+  otherwise follow is ever attempted.
+- a broken/malformed `getUpdates` response does not prevent the send that follows.
+
+Implementation:
+
+- New `src/personal_voice_msg/daily_send_entrypoint.py`: `run_daily_entrypoint` — checks whether
+  the `DAILY_SEND` trigger is currently due (pure no-op otherwise), polls once for STOP (swallowing
+  only `TelegramPollError` so poll fragility never blocks a legitimate send), then delegates to
+  `run_daily_send`.
+- New `scripts/run_daily_entrypoint.py`: the runnable script an external timer (cron inside the
+  container, or a systemd timer — T18's concern) invokes every 1-2 minutes. Loads real
+  settings/secrets, constructs a real `Database`, calls the entrypoint once, prints the resulting
+  state, and exits — non-zero on `FAILED`/`DELIVERY_UNKNOWN` (owner-relevant failure states) or an
+  unhandled exception (redacted via `Settings.redactor()` before printing, so no secret reaches
+  stderr/a log file), zero otherwise.
+- This task deliberately does not add any daemon/internal sleep loop, structured logging, alerting,
+  or container/cron unit files — those are T18/T19's scope. It also deliberately does not change
+  `consent.py`, `delivery.py`, `sender.py`, or `database.py` — it only adds new callers.
+- Accepted risk, recorded rather than fixed: `poll_inbound_stop` only runs inside the 5-minute
+  `DAILY_SEND` window, not on every cron tick all day (matching this task's own design spec). A
+  STOP sent shortly after the window closes waits up to ~24h for the next poll — Telegram drops
+  unfetched updates after 24h — and on the Pacific DST fallback day the gap between windows is 25h,
+  so a STOP sent in roughly a one-hour band that one day per year could be dropped before ever being
+  polled. Independent backstops (the blocked-by-user 403 signal, the admin kill switch) do not
+  depend on this poll. Full detail and the T19 follow-up (poll-failure alerting): `docs/task-logs/T17b.md`.
+
+Done when the entrypoint's window-gating and STOP-vs-send ordering are proven by real local
+fault-injection tests, the runnable script is wired correctly, and the independent review is clean.
+Live verification (real recipient enrollment, real STOP/send/blocked-by-user tests, one real script
+invocation during an actual send window) runs in the owner's own terminal outside the sandbox — see
+`docs/task-logs/T17b.md`.
+
 ### T18 — Cloud and container hardening
 
-Dependencies: T06, T15, T17
+Dependencies: T06, T15, T17, T17b
 
 Independent security review required.
 
