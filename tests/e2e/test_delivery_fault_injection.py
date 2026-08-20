@@ -13,7 +13,11 @@ import pytest
 
 from personal_voice_msg.audio_pipeline import produce_voice_note
 from personal_voice_msg.config import Settings, load_settings
-from personal_voice_msg.database import Database, MessageState
+from personal_voice_msg.database import (
+    Database,
+    MessageState,
+    recipient_key_for_chat_id,
+)
 from personal_voice_msg.delivery import run_daily_send
 from personal_voice_msg.history import MessageHistory
 from personal_voice_msg.scheduling import (
@@ -144,7 +148,7 @@ def test_restart_at_every_delivery_state_never_duplicates_a_send(
         f"{datetime.now(UTC).timestamp()}."
     )
     approved_message(database, text, now)
-    recipient_key = f"recipient_t16b_restart_{interrupt_state.value}"
+    recipient_key = recipient_key_for_chat_id(settings.telegram_chat_id.reveal())
     reservation = database.reserve_next_message(recipient_key, PACIFIC_DATE, now)
     assert reservation is not None
     embedding_path = settings.voice_embedding.reveal()
@@ -217,7 +221,7 @@ def test_a_real_timeout_during_send_becomes_delivery_unknown_and_never_retries(
     now = _in_send_window(PACIFIC_DATE)
     text = f"A real-hang fault injection test at {datetime.now(UTC).timestamp()}."
     approved_message(database, text, now)
-    recipient_key = "recipient_t16b_hang"
+    recipient_key = recipient_key_for_chat_id(settings.telegram_chat_id.reveal())
     reservation = database.reserve_next_message(recipient_key, PACIFIC_DATE, now)
     assert reservation is not None
     embedding_path = settings.voice_embedding.reveal()
