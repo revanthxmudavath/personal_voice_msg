@@ -121,7 +121,7 @@ def _is_blocked_by_user(body: bytes) -> bool:
     try:
         payload = json.loads(body)
         description = payload.get("description")
-    except (json.JSONDecodeError, AttributeError):
+    except (ValueError, AttributeError):
         return False
     return isinstance(description, str) and "blocked by the user" in description
 
