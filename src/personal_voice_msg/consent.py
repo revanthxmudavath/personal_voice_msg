@@ -24,6 +24,24 @@ class TelegramPollError(RuntimeError):
     """
 
 
+def _parse_getupdates_body(body: bytes) -> Any:
+    """Pure and synchronous on purpose, mirroring ``_process_updates``
+    below and sender.py's ``_is_blocked_by_user`` (Task 3) -- so the
+    JSON-decoding boundary can be unit-tested directly, without a real
+    network call.
+
+    ``json.loads`` on bytes auto-decodes the byte encoding before parsing;
+    non-UTF-8 bytes raise ``UnicodeDecodeError``, a ``ValueError``
+    subclass that is NOT a ``json.JSONDecodeError`` subclass, so it must
+    be caught explicitly too -- the identical defect class already fixed
+    in sender.py's ``_is_blocked_by_user`` (Task 3), now propagated here.
+    """
+    try:
+        return json.loads(body)
+    except ValueError:
+        raise TelegramPollError("Telegram response was not valid JSON") from None
+
+
 def _process_updates(
     payload: Any, enrolled_chat_id: int
 ) -> tuple[int | None, bool]:
@@ -114,10 +132,7 @@ async def poll_inbound_stop(
     if total > MAX_RESPONSE_BYTES:
         raise TelegramPollError("Telegram response exceeded the size limit")
 
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        raise TelegramPollError("Telegram response was not valid JSON") from None
+    payload = _parse_getupdates_body(body)
 
     new_offset, stop_found = _process_updates(
         payload, settings.telegram_chat_id.reveal()
