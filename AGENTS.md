@@ -196,7 +196,9 @@ T00 is complete only when:
   WhatsApp-Web automation confirmed dead, see docs/research/waha-alternatives.md)
 - Recipient consent, `STOP`, and an admin kill switch via a durable
   `sending_control` flag plus `getUpdates` offset-cursor polling
-  (T17 -- implementation complete, pending merge; see docs/task-logs/T17.md)
+  (T17, merged; see docs/task-logs/T17.md), driven by a minimal daily-send
+  entrypoint an external timer invokes every 1-2 minutes (T17b, merged; see
+  docs/task-logs/T17b.md)
 - Docker Compose on one hardened US-West cloud VPS
 - WireGuard and key-only SSH for administration
 
@@ -595,8 +597,8 @@ mandatory independent whole-branch security review (3 Important findings found a
 findings triaged and either fixed or deferred with recorded reasoning) before merge. Full detail:
 `docs/task-logs/T16b.md`.
 
-**Update (2026-08-19): T17 is functionally complete, reviewed clean at the per-task level, not yet
-merged.** The plan produced from
+**Update (2026-08-19): T17 is functionally complete, reviewed clean at the per-task level, and
+merged (PR #31, commit `f577caa`).** The plan produced from
 `docs/superpowers/specs/2026-08-19-t17-telegram-consent-stop-killswitch-design.md` (5 code/test
 tasks plus this documentation task,
 `docs/superpowers/plans/2026-08-19-t17-telegram-consent-stop-killswitch.md`) added `SCHEMA_V8`'s
@@ -614,9 +616,23 @@ directly) -- all recorded to the `sending_control_events` audit trail and all su
 SQLite. Each task was reviewed clean (one fix round on Task 3, described above). Full detail,
 including per-task review notes and the fresh verification suite run: `docs/task-logs/T17.md`.
 
-**Actual next step: this project's mandatory independent whole-branch security review of the full
-T17 diff** (`AGENTS.md` §Agent collaboration rules: "Security-sensitive tasks T06, T15, T16, T17,
-and T18 require independent review"), to be performed by the controlling session, not
-self-approved. Once that review passes (with any confirmed findings fixed and re-reviewed), open a
-PR and merge per this project's standard GitHub-PR workflow. After merge, T18 (cloud and container
-hardening) is next per the backlog order above.
+**Update (2026-08-24): T17b (daily-send entrypoint and live STOP wiring) is complete and merged.**
+`poll_inbound_stop` (T17) and `run_daily_send` (T16b) had no caller anywhere in the codebase before
+this task -- it gives them their first real caller: a minimal `run_daily_entrypoint` function
+(`daily_send_entrypoint.py`) plus the runnable `scripts/run_daily_entrypoint.py` an external timer
+invokes every 1-2 minutes. Not on this project's original mandatory-review list, reviewed anyway per
+the T16b precedent (loads real secrets, drives a real send through a new production-facing entry
+surface): 4 Important findings and 3 actionable Minor findings, all fixed and re-reviewed clean.
+Recipient enrollment, the branch's own fault-injection tests, and the full `integration`/`e2e` test
+suites all ran for real against genuine Telegram infrastructure -- this also closed T16b's and T17's
+own long-deferred live-verification debt, not just T17b's. Full detail, including the honestly-
+flagged one still-open live-verification item (a real script invocation during an actual,
+unmodified 07:00-07:05 Pacific window -- three scheduling attempts missed the window on scheduler
+dispatch latency, not application error; a separate schedule-patched sandbox test proved the
+send-path mechanics work end-to-end but was explicitly not accepted as satisfying this specific
+requirement) and T17's own still-open real-STOP live test: `docs/task-logs/T17b.md`.
+
+**Actual next step: T18 (cloud and container hardening)**, next per the backlog order above --
+`IMPLEMENTATION_PLAN.md`'s T18 section now depends on T17b as well. Whoever picks up T18 should also
+close the two still-open live-verification items above (T17b's real in-window script run, T17's
+real-STOP test), ideally together, live, in one sitting -- not blindly scheduled.
