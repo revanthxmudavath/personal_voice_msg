@@ -68,23 +68,23 @@ in one change.
 
 ## Current architecture snapshot (detail: AGENTS.md §Confirmed stack)
 
-T01-T15 complete and merged to main (T15: locked WAHA sender boundary).
-T09 benchmarked LangChain/Gemini and rejected it; **deterministic T07
-discovery is the production path.**
+T00 through T17b are complete and merged to `main`. `AGENTS.md` §Current
+status and blockers is the authoritative task-by-task record — always
+check it fresh each session; this file does not track task-by-task state
+(see the note at the top of this file) precisely so it can't go stale the
+way this section itself once did. T09 benchmarked LangChain/Gemini and
+rejected it: **deterministic T07 discovery is the production path.** The
+sender migrated from WAHA to the Telegram Bot API in T16b after
+self-hosted WhatsApp-Web automation was confirmed permanently blocked at
+the account level (`docs/research/waha-alternatives.md`).
 
-T16 (exactly-once delivery and ambiguity recovery) is in progress on this
-branch (`task/T16-exactly-once-delivery`), not yet merged, executed via
-`superpowers:subagent-driven-development` — see
-`.superpowers/sdd/2026-08-09-t16-exactly-once-delivery/progress.md` for the
-authoritative task-by-task record. 11 of 13 plan tasks complete and
-reviewed clean. Task 12 (the done-when-gate fault-injection suite) is
-in progress: a fix for a review-found gap (reconciliation-window
-false-positive + tautological assertion) is implemented and passes
-everything not requiring WAHA, but is not yet live-verified or
-re-reviewed — the real WAHA session is currently logged out and refusing
-re-pairing. Task 13 has not started. T16 is on the plan's mandatory
-independent-security-review list and still needs a whole-branch review
-before merge.
+**Correction (found during the pre-T18 reverification audit, 2026-08-24):**
+this section previously described T16 as "in progress ... not yet merged"
+with task-by-task detail from mid-implementation. That was stale across
+four subsequent merges (T16, T16b, T17, T17b) and pointed at a
+`.superpowers/sdd/` ledger file already deleted per that skill's own
+post-merge convention. Replaced with the paragraph above, which points to
+`AGENTS.md` instead of restating task state here.
 
 ## Commands
 
