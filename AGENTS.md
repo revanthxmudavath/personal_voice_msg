@@ -636,3 +636,15 @@ requirement) and T17's own still-open real-STOP live test: `docs/task-logs/T17b.
 `IMPLEMENTATION_PLAN.md`'s T18 section now depends on T17b as well. Whoever picks up T18 should also
 close the two still-open live-verification items above (T17b's real in-window script run, T17's
 real-STOP test), ideally together, live, in one sitting -- not blindly scheduled.
+
+**Update (2026-08-24): T18's plan section reconciled against current architecture, before any T18
+implementation.** The plan's original wording predates T16b and was WAHA-era: separate
+discovery/model/voice/sender isolation, "WAHA cannot access the crawler network." T16b deleted the
+WAHA container and `docker-compose.yml` outright when it migrated the sender to the Telegram Bot
+API (an outbound-only HTTPS client, no local service) -- there is currently no `docker-compose.yml`
+and nothing to isolate WAHA-style. Reconciled, human-confirmed topology: one app container
+(generation/judging/voice/sender/delivery/scheduler, in-process, matching T15's own precedent) plus
+one separate discovery container/network, since discovery is the actual trust boundary. T17/T17b's
+two open live-verification items are folded into T18's own scope as an explicit task
+(human-confirmed) rather than tracked separately. Full reconciled text: `IMPLEMENTATION_PLAN.md`'s
+`### T18` section.
