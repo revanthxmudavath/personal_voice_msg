@@ -949,39 +949,76 @@ Dependencies: T06, T15, T17, T17b
 
 Independent security review required.
 
+**Reconciled 2026-08-24** (pre-implementation planning pass, before any T18
+code) against the current architecture — see
+`docs/task-logs/pre-t18-reverification.md`. The text below supersedes the
+original WAHA-era wording ("WAHA cannot access the crawler network",
+discovery/model/voice/sender each separately isolated): T16b deleted the WAHA
+container and `docker-compose.yml` outright when it migrated the sender to
+the Telegram Bot API, an outbound-only HTTPS client with no local service of
+its own — there is currently no `docker-compose.yml` and no self-hosted
+sender/model/voice service to isolate from each other. Topology
+(human-confirmed): **one app container** — generation, judging, voice/Pocket
+TTS, sender/delivery, and the scheduler stay in-process together, matching
+T15's own "in-process, not microservice" precedent and the fact that this
+code is already one Python package, not four services — plus **one separate
+discovery container/network**, since discovery (untrusted web content, an
+LLM tool-use surface) is the actual trust boundary, not a distinction between
+generation/voice/sender that no longer reflects how the code is structured.
+
 Red tests:
 
-- external port scan must find no application ports.
+- external port scan finds no application ports.
 - containers cannot access the Docker socket.
-- discovery cannot access WAHA, TTS, secrets, or private networks.
+- discovery cannot reach secrets, the voice embedding, the sender's
+  credentials, or private/internal networks — only its allowlisted
+  `search_web`/`fetch_public_page`/`search_message_history`/
+  `submit_inspiration_card` surface.
 - discovery cannot reach private services through a deployment-specific NAT64
   Pref64.
-- WAHA cannot access the crawler network.
-- resource exhaustion terminates the bounded worker.
-- reboot preserves only intended state.
+- the app container's outbound egress is restricted to its real dependencies
+  (the pinned Gemini API, `api.telegram.org`) — no path to the discovery
+  container's network or any private service.
+- resource exhaustion terminates the bounded discovery worker.
+- reboot preserves only intended state (SQLite data; no transient secrets or
+  session artifacts survive a restart that shouldn't).
 - staging and production reject secret roots inside the repository, and the
   deployed secret files fail closed unless owned by the service administrator
   with the documented restrictive Unix modes.
 - a full Git-history and built-image scan finds no recipient data, credentials,
-  voice samples or embeddings, WAHA sessions, or private keys.
+  voice samples or embeddings, or private keys.
 
 Implementation:
 
 - Deny inbound traffic except WireGuard.
 - Allow key-only SSH through the VPN and disable password/root login.
-- Run containers non-root where supported.
-- Drop capabilities, enable no-new-privileges, use read-only roots where possible, and set CPU, memory, and process limits.
-- Separate discovery, model, voice, and sender networks and volumes.
-- Disable NAT64 on discovery networks or supply and test the deployment Pref64,
-  with egress controls that block discovery access to private services.
+- New `docker-compose.yml` (none exists today) with two services — the app
+  container and the discovery container — on separate networks and volumes.
+- Run both containers non-root where supported.
+- Drop capabilities, enable no-new-privileges, use read-only roots where
+  possible, and set CPU, memory, and process limits.
+- Disable NAT64 on the discovery network or supply and test the deployment
+  Pref64, with egress controls that block discovery access to private
+  services.
 - Pin container digests. For managed model APIs, pin the provider, stable model
   ID, API contract, and client version, and requalify before changing them.
 - Mount deployed secrets outside the application checkout, validate their
-  ownership and modes at startup, and expose each only to its required service.
+  ownership and modes at startup, and expose each only to its required
+  service — the app container never gets discovery's credentials and
+  vice versa.
 - Scan the complete Git history and built images for sensitive artifacts before
   staging and production release.
+- Close T17/T17b's two open live-verification items as an explicit task
+  within this branch (human-confirmed, folded into T18's scope rather than
+  tracked separately): a real `STOP` from the enrolled Telegram chat
+  (`tests/integration/test_consent_integration.py::test_a_real_exact_stop_from_the_enrolled_chat_disables_sending_durably`),
+  and one real `scripts/run_daily_entrypoint.py` invocation during a genuine,
+  unmodified 07:00-07:05 Pacific `DAILY_SEND` window — both require the
+  owner live with the real phone/Telegram chat, not something a sandboxed
+  agent session can do unattended.
 
-Done when the security suite and external exposure scan pass.
+Done when the security suite and external exposure scan pass, and both
+folded-in live-verification items are closed.
 
 ### T19 — Audit, alerts, backups, and recovery
 
