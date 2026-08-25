@@ -6,23 +6,41 @@
 # name this file's own tests assert on.
 name: personal_voice_msg
 
-# Image digest pinned 2026-08-24 via:
-#   docker build -t personal-voice-msg:t18 .
+# Image digest pinned 2026-08-24 via the build path this file itself uses:
+#   docker compose build
 #   docker inspect personal-voice-msg:t18 --format '{{.Id}}'
-# -> sha256:1447d100655b7f1c21b86a091c1a3f06e9d1a4e0c08967a90e636c46c1a816f1
-# Recorded here as documentation rather than embedded in the `image:` lines
-# below as personal-voice-msg:t18@sha256:...: confirmed empirically that
-# both (a) `docker tag`/BuildKit refuse to create a digest-qualified tag at
-# all ("refusing to create a tag with a digest reference") whenever `build:`
-# is present, and (b) even without `build:`, a purely local (never pushed to
-# a registry) image has no RepoDigests entry, so `docker run
+# -> sha256:53d2d4cde462ad01b36fc7aadc16ea8a7fb2c5bcf99e9f528753d55cea05a9fb
+# Only `app` declares `build:` -- `discovery` below intentionally has none
+# and just references the tag `app`'s build produces. This is not
+# stylistic: when both services declared `build: .` against the same
+# `image: personal-voice-msg:t18`, `docker compose build` baked them as two
+# separate targets (Compose auto-labels each build with its owning service,
+# e.g. com.docker.compose.service=app vs =discovery, so the two configs
+# differ even though every Dockerfile layer is CACHED and identical), and
+# both targets raced to tag the one shared name -- confirmed empirically,
+# repeated `docker compose build` runs alternated the resolved `.Id`
+# between sha256:53d2d4cde462...05a9fb (app's target) and
+# sha256:5087c5c6a27b...33875c (discovery's target) depending purely on
+# which target's "naming to ..." step finished last. Building only `app`
+# (`docker compose build app`, or the whole-file `docker compose build`
+# now that `discovery` has no build target of its own to race) reproduced
+# the single value above on every repeated run. Recorded as a comment
+# rather than embedded in the `image:` lines as
+# personal-voice-msg:t18@sha256:...: confirmed empirically that (a)
+# `docker tag`/BuildKit refuse to create a digest-qualified tag at all
+# ("refusing to create a tag with a digest reference") whenever `build:` is
+# present, and (b) even without `build:`, a purely local (never pushed to a
+# registry) image has no RepoDigests entry, so `docker run
 # personal-voice-msg:t18@sha256:<this id>` fails with "pull access denied"
 # even though the plain tag already exists locally -- there is no registry
 # in this project to push to and make the digest genuinely resolvable.
 # Embedding it would break this file's own `docker compose build && up`
-# test suite (tests/security/test_container_deployment.py). Rebuild + rerun
-# tests/security/test_container_image.py and this file's suite before
-# changing, and confirm the `.Id` above still matches.
+# test suite (tests/security/test_container_deployment.py). To requalify:
+# rebuild via `docker compose build` (not plain `docker build`, which
+# resolves to a different, also-stable value because it skips Compose's
+# bake path and its service labels entirely) + rerun
+# tests/security/test_container_image.py and this file's suite, and
+# confirm the `.Id` above still matches.
 services:
   app:
     image: personal-voice-msg:t18
@@ -51,7 +69,10 @@ services:
 
   discovery:
     image: personal-voice-msg:t18
-    build: .
+    # No `build:` here on purpose -- see the digest-pin comment above
+    # `services:`. `app`'s `build: .` is the single source of this image;
+    # `discovery` just runs the tag `app` produces, avoiding the two-target
+    # tag-write race that made the pinned digest non-reproducible.
     user: "10001"
     read_only: true
     tmpfs:
