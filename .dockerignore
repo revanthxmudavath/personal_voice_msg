@@ -1,0 +1,14 @@
+.venv/
+.uv-cache/
+.tmp/
+.pytest_cache/
+.pytest-tmp-*/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+node_modules/
+tests/
+docs/
+.git/
+*.md
+!README.md
