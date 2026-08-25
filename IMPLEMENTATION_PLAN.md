@@ -1023,16 +1023,20 @@ folded-in live-verification items are closed.
 **Status (2026-08-25):** all 9 build/red-test tasks complete and reviewed
 clean at the per-task level (`docs/task-logs/T18.md`, `.superpowers/sdd/
 2026-08-24-t18-cloud-container-hardening/progress.md`). The full verification
-suite was run for real; every command passed except one test in
-`tests/security/test_firewall_rules.py`, root-caused to a Windows-sandbox-only
-git-checkout line-ending artifact (not a ruleset or test-logic defect, not
-reproducible on the real Linux VPS target) and left unfixed pending the
-independent review's own judgment call. **Not yet done**: the independent
-whole-branch security review and PR/merge (pending, separate from this
-verification pass), and both folded-in live-verification items (real STOP
-from the enrolled Telegram chat; real 07:00-07:05 Pacific `DAILY_SEND` cron
-firing) — both documented with exact commands in `docs/task-logs/T18.md`,
-requiring the owner to run live.
+suite was run for real; one test initially failed
+(`tests/security/test_firewall_rules.py`), root-caused to a Windows-sandbox
+git-checkout line-ending artifact (`core.autocrlf=true` corrupting the
+committed LF-only `infra/firewall/rules.nft` to CRLF on disk) and fixed within
+this task via a new root `.gitattributes` (`* text=auto eol=lf`, verified safe
+against this repo's all-Linux CI/deployment target) plus a forced
+renormalization of the two affected files. `uv run pytest -m security -q` now
+passes clean: 92 passed, 0 failed, 52 skipped — **the security suite now
+passes, satisfying that half of this section's "Done when" gate.** **Not yet
+done**: the independent whole-branch security review and PR/merge (pending,
+separate from this verification pass), and both folded-in live-verification
+items (real STOP from the enrolled Telegram chat; real 07:00-07:05 Pacific
+`DAILY_SEND` cron firing) — both documented with exact commands in
+`docs/task-logs/T18.md`, requiring the owner to run live.
 
 ### T19 — Audit, alerts, backups, and recovery
 

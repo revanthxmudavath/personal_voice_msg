@@ -668,18 +668,25 @@ negative-only control). Full per-task ledger:
 `.superpowers/sdd/2026-08-24-t18-cloud-container-hardening/progress.md`.
 
 **Task 10 (this documentation/verification task) ran the full regression suite
-for real and found one real failure**, root-caused to a Windows-sandbox-only
-git checkout artifact (`core.autocrlf=true` converting the committed LF-only
-`infra/firewall/rules.nft` to CRLF on disk, which breaks `nft -f`'s parser) --
-confirmed by manually reproducing both the failure (CRLF) and a clean pass
-(LF, byte-identical content otherwise) against the same built verification
-image. Not a defect in the ruleset or test logic, and not reproducible on the
-real Linux VPS deployment target; not fixed in this task (documentation-only
-scope) -- flagged for the independent reviewer, along with a suggested
-`.gitattributes` fix to prevent recurrence for future Windows-based
-contributors. **T18's two folded-in live-verification items (a real STOP from
-the enrolled Telegram chat; a real, unmodified 07:00-07:05 Pacific `DAILY_SEND`
-cron firing) remain open** -- documented with exact commands in
+for real, found and fixed one real failure.** The failure was root-caused to a
+Windows-sandbox-only git checkout artifact (`core.autocrlf=true` converting
+the committed LF-only `infra/firewall/rules.nft` to CRLF on disk, which breaks
+`nft -f`'s parser) -- confirmed by manually reproducing both the failure
+(CRLF) and a clean pass (LF, byte-identical content otherwise) against the
+same built verification image. Judged not to be a defer-able sandbox-only
+quirk: `core.autocrlf=true` is a common Windows Git default, so the same
+corruption could hit a real Windows-based contributor or CI runner preparing
+files for the real VPS deployment, and it meant T18's own "security suite
+passes" done-when gate was not actually met. Fixed within T18: a new root
+`.gitattributes` (`* text=auto eol=lf`, verified safe -- zero committed blobs
+anywhere in this repository's history contain CRLF, and both this project's CI
+and its real deployment target are Linux-only) plus a forced renormalization
+of `infra/firewall/rules.nft` and `docker-compose.yml` (the two files the
+stale checkout actually broke; zero Git diff on either file's tracked
+content). `uv run pytest -m security -q` now passes clean: **92 passed, 0
+failed, 52 skipped**. **T18's two folded-in live-verification items (a real
+STOP from the enrolled Telegram chat; a real, unmodified 07:00-07:05 Pacific
+`DAILY_SEND` cron firing) remain open** -- documented with exact commands in
 `docs/task-logs/T18.md`, not executed, for the same reason every prior live
 item in this project required the owner (no safe/verified path to real
 Telegram infrastructure or a live wall-clock window from an unattended
