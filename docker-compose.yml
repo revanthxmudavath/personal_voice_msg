@@ -1,0 +1,89 @@
+# Pinned so the compose project name (and therefore network names like
+# personal_voice_msg_discovery_net) is deterministic regardless of the
+# checkout directory name -- worktree checkouts under this repo use
+# directory names such as task+T18-cloud-container-hardening, which would
+# otherwise change Compose's default project name and break the network
+# name this file's own tests assert on.
+name: personal_voice_msg
+
+# Image digest pinned 2026-08-24 via:
+#   docker build -t personal-voice-msg:t18 .
+#   docker inspect personal-voice-msg:t18 --format '{{.Id}}'
+# -> sha256:1447d100655b7f1c21b86a091c1a3f06e9d1a4e0c08967a90e636c46c1a816f1
+# Recorded here as documentation rather than embedded in the `image:` lines
+# below as personal-voice-msg:t18@sha256:...: confirmed empirically that
+# both (a) `docker tag`/BuildKit refuse to create a digest-qualified tag at
+# all ("refusing to create a tag with a digest reference") whenever `build:`
+# is present, and (b) even without `build:`, a purely local (never pushed to
+# a registry) image has no RepoDigests entry, so `docker run
+# personal-voice-msg:t18@sha256:<this id>` fails with "pull access denied"
+# even though the plain tag already exists locally -- there is no registry
+# in this project to push to and make the digest genuinely resolvable.
+# Embedding it would break this file's own `docker compose build && up`
+# test suite (tests/security/test_container_deployment.py). Rebuild + rerun
+# tests/security/test_container_image.py and this file's suite before
+# changing, and confirm the `.Id` above still matches.
+services:
+  app:
+    image: personal-voice-msg:t18
+    build: .
+    user: "10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    mem_limit: 8g
+    cpus: 4
+    networks: [app_net]
+    volumes:
+      - db_data:/data
+      - type: bind
+        source: ${SECRET_ROOT}
+        target: /secrets
+        read_only: true
+    # Placeholder until Task 7 adds scripts/crontab -- Task 7 Step 3
+    # replaces this with ["supercronic", "/app/scripts/crontab"], the only
+    # place this line changes after this task.
+    command: ["sleep", "300"]
+    restart: unless-stopped
+
+  discovery:
+    image: personal-voice-msg:t18
+    build: .
+    user: "10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 1g
+    cpus: 1
+    networks: [discovery_net]
+    # No `searxng` service exists in this file, and none is added by T18:
+    # like the weekly-discovery-pipeline gap noted above, "what SearXNG
+    # instance does production discovery search against" is a pre-existing
+    # open question this task does not solve (no self-hosted SearXNG has
+    # ever been deployed anywhere in this project's history; T07's own
+    # tests reach a real SearXNG only via a throwaway Docker test fixture,
+    # T07_NETWORK_HARNESS/SEARXNG_URL). The discovery container's job here
+    # is to exist as a correctly networked, correctly resource-bounded,
+    # correctly isolated container for T18's own hardening tests -- not to
+    # produce real discovery output. Once a real SearXNG target is decided,
+    # the owner runs the real verification harness manually:
+    # `docker compose exec discovery python scripts/run_discovery_worker.py
+    # --searxng-base-url <real-url> --budget-seconds 60` (documented in
+    # infra/RUNBOOK.md, Task 9).
+    command: ["sleep", "300"]
+    restart: "no"
+
+networks:
+  app_net:
+    enable_ipv6: false
+  discovery_net:
+    enable_ipv6: false
+
+volumes:
+  db_data:
