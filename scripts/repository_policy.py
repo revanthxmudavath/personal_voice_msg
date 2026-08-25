@@ -344,11 +344,21 @@ def check_image_secrets(image: str) -> list[str]:
         )
         with tarfile.open(fileobj=io.BytesIO(export.stdout)) as archive:
             for member in archive.getmembers():
-                # Only regular files hold scannable content; symlinks (some
-                # point at absolute paths outside any extraction root, e.g.
-                # /etc/mtab), directories, and device/fifo entries are
-                # skipped rather than extracted to disk.
-                if not member.isfile():
+                # Regular files and hard links carry scannable content.
+                # `archive.extractfile()` resolves a hard link (LNKTYPE) to
+                # its target's bytes automatically -- a hard link is just a
+                # reference to an already-archived member, so this never
+                # touches disk and never fails to resolve. Docker image
+                # layers are full of these: e.g. a base image can hard-link
+                # a sensitively-named path (`/id_rsa`) to a regular file
+                # already present under a different name, and the alias's
+                # own `member.name` must still be checked, not just the
+                # target's. Symlinks are skipped: some point at absolute
+                # paths with no member of their own in the archive (e.g.
+                # /etc/mtab -> /proc/mounts), which would raise when
+                # resolved. Directories and device/fifo entries carry no
+                # content either.
+                if not (member.isfile() or member.islnk()):
                     continue
                 label = member.name
                 filename = Path(label).name.casefold()

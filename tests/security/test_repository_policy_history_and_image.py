@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -59,5 +61,59 @@ def test_check_image_secrets_catches_a_secret_baked_into_a_layer(
     try:
         violations = check_image_secrets(image_tag)
         assert any("credential" in v for v in violations), violations
+    finally:
+        subprocess.run(["docker", "rmi", "-f", image_tag], capture_output=True)
+
+
+def test_check_image_secrets_catches_a_sensitive_name_reachable_only_via_a_hard_link(
+    tmp_path: Path,
+) -> None:
+    # Docker image layers routinely contain hard links (e.g. a base image
+    # linking one binary name to another already-archived file). A
+    # `tarfile` hard-link member (LNKTYPE) has `isfile() == False`, so a
+    # naive "only regular files" gate silently skips it -- and with it,
+    # any sensitively-named path that exists only as a hard-link alias.
+    # This plants exactly that: /id_rsa is a real hard link (`ln`, not
+    # `ln -s`) to /data.bin, and /data.bin's own name and content are
+    # deliberately unremarkable (no token pattern, not a sensitive name),
+    # so the only way to catch /id_rsa is to check a hard-link member's
+    # own name, not just regular-file members.
+    (tmp_path / "Dockerfile").write_text(
+        "FROM busybox\n"
+        "RUN echo 'unremarkable content, no token pattern here' > /data.bin"
+        " && ln /data.bin /id_rsa\n",
+        encoding="utf-8",
+    )
+    image_tag = "t18-repo-policy-test-hardlink-image"
+    subprocess.run(
+        ["docker", "build", "-t", image_tag, str(tmp_path)],
+        check=True,
+        capture_output=True,
+    )
+    try:
+        # Precondition proof: confirm Docker actually materialized
+        # /id_rsa as a tar hard-link member (not two independent regular
+        # -file copies), so this test genuinely exercises the hard-link
+        # code path the fix targets rather than accidentally passing some
+        # other way.
+        container = subprocess.run(
+            ["docker", "create", image_tag],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        try:
+            export = subprocess.run(
+                ["docker", "export", container], capture_output=True, check=True,
+            )
+            with tarfile.open(fileobj=io.BytesIO(export.stdout)) as archive:
+                id_rsa_member = archive.getmember("id_rsa")
+        finally:
+            subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+        assert id_rsa_member.islnk(), id_rsa_member.type
+        assert not id_rsa_member.isfile()
+
+        violations = check_image_secrets(image_tag)
+        assert any("id_rsa" in v for v in violations), violations
     finally:
         subprocess.run(["docker", "rmi", "-f", image_tag], capture_output=True)
