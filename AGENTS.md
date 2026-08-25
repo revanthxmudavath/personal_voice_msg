@@ -648,3 +648,41 @@ one separate discovery container/network, since discovery is the actual trust bo
 two open live-verification items are folded into T18's own scope as an explicit task
 (human-confirmed) rather than tracked separately. Full reconciled text: `IMPLEMENTATION_PLAN.md`'s
 `### T18` section.
+
+**Update (2026-08-25): T18's 9 build/red-test tasks are complete, each reviewed
+clean at the per-task level** (one fix round on Tasks 1, 2, 3, 4, 5, and 7; Tasks
+6, 8, 9 approved clean on first review) -- new `Dockerfile`/`.dockerignore` (one
+shared, pinned, non-root image), `docker-compose.yml` (none existed since T16b
+deleted the WAHA-era one -- two services, `app` and `discovery`, on separate
+networks/volumes, capabilities dropped, `no-new-privileges`, read-only roots,
+resource limits), `scripts/crontab` wiring supercronic to
+`scripts/run_daily_entrypoint.py` (T17b) inside the `app` container,
+`discovery_worker_entrypoint.py`/`scripts/run_discovery_worker.py` (a bounded
+verification harness reusing T07's discovery code, not new production
+candidate-generation wiring), a full Git-history/built-image secret scanner
+added to `scripts/repository_policy.py`, and infra-as-code for firewall/
+WireGuard/SSH hardening (`infra/`) with a real local Docker-network-namespace
+substitute for "the host" proving the nftables ruleset is genuinely selective
+(a real UDP echo round-trip through the loaded ruleset, not just a
+negative-only control). Full per-task ledger:
+`.superpowers/sdd/2026-08-24-t18-cloud-container-hardening/progress.md`.
+
+**Task 10 (this documentation/verification task) ran the full regression suite
+for real and found one real failure**, root-caused to a Windows-sandbox-only
+git checkout artifact (`core.autocrlf=true` converting the committed LF-only
+`infra/firewall/rules.nft` to CRLF on disk, which breaks `nft -f`'s parser) --
+confirmed by manually reproducing both the failure (CRLF) and a clean pass
+(LF, byte-identical content otherwise) against the same built verification
+image. Not a defect in the ruleset or test logic, and not reproducible on the
+real Linux VPS deployment target; not fixed in this task (documentation-only
+scope) -- flagged for the independent reviewer, along with a suggested
+`.gitattributes` fix to prevent recurrence for future Windows-based
+contributors. **T18's two folded-in live-verification items (a real STOP from
+the enrolled Telegram chat; a real, unmodified 07:00-07:05 Pacific `DAILY_SEND`
+cron firing) remain open** -- documented with exact commands in
+`docs/task-logs/T18.md`, not executed, for the same reason every prior live
+item in this project required the owner (no safe/verified path to real
+Telegram infrastructure or a live wall-clock window from an unattended
+sandbox). **T18's mandatory independent whole-branch security review and PR
+are still pending**, handled separately from this task. Full detail, including
+every command's real output: `docs/task-logs/T18.md`.
