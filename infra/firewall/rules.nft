@@ -1,0 +1,32 @@
+# infra/firewall/rules.nft
+#
+# Applied on the real VPS per infra/RUNBOOK.md (step 4). No live VPS exists
+# for this project yet (confirmed by the owner at the start of T18; see
+# docs/superpowers/specs/2026-08-24-t18-cloud-container-hardening-design.md).
+# Verified locally -- not against a live VPS -- by
+# tests/security/test_firewall_rules.py, which loads this exact file via
+# `nft -f` inside a real throwaway Linux container (--cap-add NET_ADMIN)
+# and probes it from outside that container's network namespace.
+#
+# Policy: default-deny inbound, allow only established/related traffic,
+# loopback, ICMP, and the WireGuard administration port (UDP/51820).
+# Application traffic (Telegram, Gemini) is outbound-only from the app
+# container and is not affected by this host-level ruleset -- container
+# egress allowlisting is handled separately (component 3 of the T18
+# design, docker-compose.yml network policy), not here. Forwarding is
+# denied outright: this host does not route traffic for other hosts.
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        ct state established,related accept
+        iif "lo" accept
+        udp dport 51820 accept comment "WireGuard administration endpoint"
+        ip protocol icmp accept
+    }
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
