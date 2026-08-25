@@ -50,4 +50,14 @@ COPY scripts /app/scripts
 WORKDIR /app
 ENV PATH="/app/.venv/bin:${PATH}" PYTHONPATH="/app/src"
 
+# /data is where the db_data named volume (docker-compose.yml) mounts the
+# SQLite database the daily-send cron job (Task 7) writes as appuser. A
+# fresh named volume with nothing at this path in the image is created by
+# Docker owned root:root mode 755 -- appuser could not write to it at all
+# (confirmed empirically: "Permission denied" on every write). Pre-creating
+# and chowning the directory here means Docker copies this ownership onto
+# the volume the first time it's mounted, so appuser can actually create
+# /data/app.db.
+RUN mkdir -p /data && chown appuser:appuser /data
+
 USER appuser
