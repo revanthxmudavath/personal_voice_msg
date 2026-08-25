@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
@@ -107,7 +109,13 @@ def secret_root(
     return resolved
 
 
-def secret_file(root: Path, value: str, setting: str) -> Path:
+def secret_file(
+    root: Path,
+    value: str,
+    setting: str,
+    *,
+    profile: RuntimeProfile = RuntimeProfile.PRODUCTION,
+) -> Path:
     relative = Path(value)
     if relative.is_absolute():
         raise ConfigurationError(f"{setting} must be relative to secret root")
@@ -117,7 +125,29 @@ def secret_file(root: Path, value: str, setting: str) -> Path:
         raise ConfigurationError(f"{setting} is missing") from None
     if not resolved.is_relative_to(root) or not resolved.is_file():
         raise ConfigurationError(f"{setting} is outside secret root or not a file")
+    if profile is not RuntimeProfile.DEVELOPMENT:
+        _validate_secret_file_permissions(resolved, setting)
     return resolved
+
+
+def _validate_secret_file_permissions(path: Path, setting: str) -> None:
+    # os.geteuid() only exists on POSIX platforms; this project's Windows
+    # test suite has no real ownership/mode bits to check (NTFS's os.stat
+    # emulation reports group/other bits regardless of actual ACLs), so
+    # both checks below are no-ops there and only run for real on the
+    # Linux hosts this deployment actually targets.
+    if not hasattr(os, "geteuid"):
+        return
+    try:
+        info = path.stat()
+    except OSError:
+        raise ConfigurationError(f"{setting} is unreadable") from None
+    if info.st_uid != os.geteuid():
+        raise ConfigurationError(
+            f"{setting} is not owned by the running service identity"
+        )
+    if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        raise ConfigurationError(f"{setting} has an insecure permission mode")
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -182,20 +212,24 @@ def load_settings(config_path: Path) -> Settings:
     profile = runtime_profile(document["profile"])
     root = secret_root(path, document["secret_root"], profile)
     chat_id_path = secret_file(
-        root, document["telegram_chat_id_file"], "telegram_chat_id_file"
+        root, document["telegram_chat_id_file"], "telegram_chat_id_file",
+        profile=profile,
     )
     token_path = secret_file(
-        root, document["telegram_bot_token_file"], "telegram_bot_token_file"
+        root, document["telegram_bot_token_file"], "telegram_bot_token_file",
+        profile=profile,
     )
     embedding_path = secret_file(
         root,
         document["voice_embedding_file"],
         "voice_embedding_file",
+        profile=profile,
     )
     sender_auth_key_path = secret_file(
         root,
         document["sender_auth_key_file"],
         "sender_auth_key_file",
+        profile=profile,
     )
 
     return Settings(
