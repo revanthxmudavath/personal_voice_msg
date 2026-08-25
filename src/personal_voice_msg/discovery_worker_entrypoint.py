@@ -20,7 +20,7 @@ from personal_voice_msg.discovery.baseline import (
     DiscoveryExtractionError,
     DiscoverySearchError,
 )
-from personal_voice_msg.discovery.web import DiscoveryWebSession
+from personal_voice_msg.discovery.web import DiscoveryBoundaryError, DiscoveryWebSession
 
 
 def _null_analyzer(text: str, record: object) -> None:
@@ -49,6 +49,6 @@ async def run_discovery_worker(
             try:
                 await discovery.analyze_result(result.result_id, _null_analyzer)
                 analyzed += 1
-            except DiscoveryExtractionError:
+            except (DiscoveryBoundaryError, DiscoveryExtractionError):
                 continue
     return analyzed
