@@ -15,13 +15,19 @@ RUN uv sync --locked --no-dev
 
 FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a AS runtime
 
-# ffmpeg: required by audio_pipeline.py (T14). Version pinned to whatever
-# this base image's apt snapshot actually resolves -- confirmed by running
-# `ffmpeg -version` in the built image on 2026-08-24: ffmpeg 7.1.5-0+deb13u1
-# (Debian trixie apt snapshot baked into this base image digest). Because
-# the version is tied to the base image's own apt snapshot, it moves only
-# when the base digest above is bumped and requalified.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && \
+# ffmpeg: required by audio_pipeline.py (T14). Hard-pinned to the exact apt
+# candidate version resolved 2026-08-24 via:
+#   apt-get update && apt-cache policy ffmpeg
+# -> candidate 7:7.1.5-0+deb13u1 (Debian trixie mirror; note the "7:" epoch
+# prefix required by apt's package=version syntax -- `ffmpeg -version` does
+# not print the epoch, only the mirror does). Pinned explicitly by the
+# version pin on this line, independent of the base image digest above --
+# apt fetches live package indices from the Debian mirror at build time.
+# If this exact version ever disappears from the mirror, the build fails
+# loudly instead of silently drifting; re-resolve via the commands above and
+# requalify (rebuild + rerun this task's full test suite) before bumping.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ffmpeg=7:7.1.5-0+deb13u1 && \
     rm -rf /var/lib/apt/lists/*
 
 # supercronic: non-root-capable cron for the app container's daily-send
