@@ -1,0 +1,4 @@
+# scripts/crontab
+# supercronic format: standard 5-field cron + command.
+# Matches T17b's documented "every 1-2 minutes" external-timer target.
+* * * * * python3 /app/scripts/run_daily_entrypoint.py --config /secrets/app.toml --database /data/app.db
