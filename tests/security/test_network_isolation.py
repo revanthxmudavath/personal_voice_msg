@@ -43,6 +43,7 @@ def test_discovery_cannot_reach_the_app_container_at_all() -> None:
     result = _exec("discovery", "python3", "-c",
         "import socket; socket.create_connection(('app', 80), timeout=3)")
     assert result.returncode != 0
+    _assert_dns_isolation_failure(result, hostname="app")
 
 
 def test_discovery_cannot_reach_a_private_network_address() -> None:
@@ -55,3 +56,25 @@ def test_app_cannot_reach_the_discovery_container() -> None:
     result = _exec("app", "python3", "-c",
         "import socket; socket.create_connection(('discovery', 80), timeout=3)")
     assert result.returncode != 0
+    _assert_dns_isolation_failure(result, hostname="discovery")
+
+
+def _assert_dns_isolation_failure(
+    result: subprocess.CompletedProcess[str], *, hostname: str
+) -> None:
+    # A nonzero exit alone is not proof of network isolation: if the two
+    # containers shared a network (the exact "stray shared network" gap
+    # Task 4's own precedent test worried about), the hostname would
+    # resolve, the connect would reach a real host, and nothing listening
+    # on port 80 would raise ConnectionRefusedError -- which also exits
+    # nonzero, giving a false pass. Isolation is only proven when the
+    # hostname doesn't even resolve across the boundary, i.e. a
+    # socket.gaierror ("Name or service not known"), not a refused
+    # connection to a resolved host.
+    assert "gaierror" in result.stderr, (
+        f"expected socket.gaierror (DNS resolution failure) proving "
+        f"'{hostname}' does not resolve across the network boundary; "
+        f"got a different failure instead (e.g. ConnectionRefusedError "
+        f"would mean the host resolved and was reachable -- NOT "
+        f"isolation). stderr was:\n{result.stderr}"
+    )
