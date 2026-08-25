@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import re
 import subprocess
 import sys
-from collections.abc import Iterable
+import tarfile
+from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import cast
 
 import yaml
 
@@ -202,23 +205,43 @@ def check_lockfile(root: Path) -> list[str]:
     return [f"lockfile stale: {detail}"]
 
 
+def _is_documented_example(filename: str) -> bool:
+    return filename.endswith(".example") or any(
+        filename.endswith(f".example{suffix}") for suffix in DOCUMENTATION_SUFFIXES
+    )
+
+
+def _is_sensitive_filename(filename: str, suffix: str) -> bool:
+    return (
+        filename in SENSITIVE_ARTIFACT_NAMES
+        or suffix in SENSITIVE_ARTIFACT_SUFFIXES
+        or ("waha" in filename and "token" in filename)
+        or ("waha" in filename and "session" in filename)
+        or ("telegram" in filename and "token" in filename)
+        or ("gemini" in filename and ("key" in filename or "token" in filename))
+        or ("sender" in filename and "key" in filename)
+    )
+
+
+def _scan_content_for_secrets(content: str, label: str) -> list[str]:
+    violations: list[str] = []
+    if GITHUB_TOKEN.search(content):
+        violations.append(f"credential detected: {label}")
+    if GEMINI_API_KEY.search(content):
+        violations.append(f"credential detected: {label}")
+    if TELEGRAM_BOT_TOKEN.search(content):
+        violations.append(f"credential detected: {label}")
+    if PRIVATE_KEY.search(content):
+        violations.append(f"private key detected: {label}")
+    return violations
+
+
 def check_secrets(root: Path) -> list[str]:
     violations: list[str] = []
     for path in repository_files(root):
         filename = path.name.casefold()
-        documented_example = filename.endswith(".example") or any(
-            filename.endswith(f".example{suffix}")
-            for suffix in DOCUMENTATION_SUFFIXES
-        )
-        sensitive_filename = (
-            filename in SENSITIVE_ARTIFACT_NAMES
-            or path.suffix.casefold() in SENSITIVE_ARTIFACT_SUFFIXES
-            or ("waha" in filename and "token" in filename)
-            or ("waha" in filename and "session" in filename)
-            or ("telegram" in filename and "token" in filename)
-            or ("gemini" in filename and ("key" in filename or "token" in filename))
-            or ("sender" in filename and "key" in filename)
-        )
+        documented_example = _is_documented_example(filename)
+        sensitive_filename = _is_sensitive_filename(filename, path.suffix.casefold())
         if sensitive_filename and not documented_example:
             violations.append(
                 f"sensitive artifact detected: {display_path(path, root)}"
@@ -266,6 +289,85 @@ def check_secrets(root: Path) -> list[str]:
             violations.append(
                 f"private key detected: {display_path(path, root)}"
             )
+    return violations
+
+
+def check_git_history(root: Path) -> list[str]:
+    violations: list[str] = []
+    listing = subprocess.run(
+        ["git", "-C", str(root), "rev-list", "--all", "--objects"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    for line in listing.stdout.splitlines():
+        parts = line.split(" ", 1)
+        if len(parts) != 2:
+            continue
+        blob_sha, path_in_history = parts
+        filename = Path(path_in_history).name.casefold()
+        documented_example = _is_documented_example(filename)
+        sensitive_filename = _is_sensitive_filename(
+            filename, Path(path_in_history).suffix.casefold()
+        )
+        if sensitive_filename and not documented_example:
+            violations.append(
+                f"sensitive artifact detected in history: "
+                f"{path_in_history}@{blob_sha[:12]}"
+            )
+            continue
+        content = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "-p", blob_sha],
+            capture_output=True,
+            text=True,
+            errors="ignore",
+            check=False,
+        ).stdout
+        violations.extend(
+            v.replace(path_in_history, f"{path_in_history}@{blob_sha[:12]}")
+            for v in _scan_content_for_secrets(content, path_in_history)
+        )
+    return violations
+
+
+def check_image_secrets(image: str) -> list[str]:
+    violations: list[str] = []
+    container = subprocess.run(
+        ["docker", "create", image],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    try:
+        export = subprocess.run(
+            ["docker", "export", container], capture_output=True, check=True,
+        )
+        with tarfile.open(fileobj=io.BytesIO(export.stdout)) as archive:
+            for member in archive.getmembers():
+                # Only regular files hold scannable content; symlinks (some
+                # point at absolute paths outside any extraction root, e.g.
+                # /etc/mtab), directories, and device/fifo entries are
+                # skipped rather than extracted to disk.
+                if not member.isfile():
+                    continue
+                label = member.name
+                filename = Path(label).name.casefold()
+                documented_example = _is_documented_example(filename)
+                sensitive_filename = _is_sensitive_filename(
+                    filename, Path(label).suffix.casefold()
+                )
+                if sensitive_filename and not documented_example:
+                    violations.append(
+                        f"sensitive artifact detected in image: {label}"
+                    )
+                    continue
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    continue
+                content = extracted.read().decode("utf-8", errors="ignore")
+                violations.extend(_scan_content_for_secrets(content, label))
+    finally:
+        subprocess.run(["docker", "rm", "-f", container], capture_output=True)
     return violations
 
 
@@ -359,21 +461,44 @@ CHECKS = {
     "lockfile": check_lockfile,
     "secrets": check_secrets,
     "workflow": check_workflows,
+    "git-history": check_git_history,
+    "image": check_image_secrets,
 }
+# "image" scans a built Docker image tag rather than a repository root, so it
+# cannot run as part of "all" (there is no default image to scan) and is
+# dispatched with --image instead of --root in main().
+IMAGE_CHECKS = {"image"}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate repository policy")
     parser.add_argument("check", choices=[*CHECKS, "all"])
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument(
+        "--image", default=None, help="image tag to scan (required for 'image')"
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     root = args.root.resolve()
-    checks = CHECKS.values() if args.check == "all" else (CHECKS[args.check],)
-    violations = [violation for check in checks for violation in check(root)]
+    names = (
+        [name for name in CHECKS if name not in IMAGE_CHECKS]
+        if args.check == "all"
+        else [args.check]
+    )
+    violations: list[str] = []
+    for name in names:
+        if name in IMAGE_CHECKS:
+            if not args.image:
+                print(f"--image is required for the '{name}' check", file=sys.stderr)
+                return 2
+            image_check = cast(Callable[[str], list[str]], CHECKS[name])
+            violations.extend(image_check(args.image))
+        else:
+            root_check = cast(Callable[[Path], list[str]], CHECKS[name])
+            violations.extend(root_check(root))
     if violations:
         print("\n".join(violations), file=sys.stderr)
         return 1
