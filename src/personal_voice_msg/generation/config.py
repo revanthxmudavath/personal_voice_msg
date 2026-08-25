@@ -47,6 +47,7 @@ def load_gemini_settings(config_path: Path) -> GeminiSettings:
     profile = runtime_profile(document["profile"])
     root = secret_root(path, document["secret_root"], profile)
     key_path = secret_file(
-        root, document["gemini_api_key_file"], "gemini_api_key_file"
+        root, document["gemini_api_key_file"], "gemini_api_key_file",
+        profile=profile,
     )
     return GeminiSettings(profile=profile, api_key=SensitiveValue(_api_key(key_path)))

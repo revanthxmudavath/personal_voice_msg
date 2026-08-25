@@ -21,7 +21,7 @@ def _run_check(
     container = f"t18-secret-perm-{uuid.uuid4().hex[:8]}"
     project_root = "/workspace"
     script = f"""
-import os, pwd, grp
+import os, pwd
 os.makedirs('/secrets', exist_ok=True)
 uid = {owner_uid}
 # Ensure a user with this uid exists (root=0 always does); create one otherwise.
@@ -52,10 +52,6 @@ except ConfigurationError as exc:
              "-v", f"{__file__.rsplit('tests', 1)[0]}:{project_root}:ro",
              IMAGE, "sleep", "60"],
             check=True, capture_output=True, text=True,
-        )
-        subprocess.run(
-            ["docker", "exec", "-u", "root", container, "python3", "-c", script],
-            check=False, capture_output=True, text=True,
         )
         result = subprocess.run(
             ["docker", "exec", "-u", "root", container, "python3", "-c", script],
