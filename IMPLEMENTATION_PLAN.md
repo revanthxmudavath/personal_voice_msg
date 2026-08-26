@@ -1020,23 +1020,29 @@ Implementation:
 Done when the security suite and external exposure scan pass, and both
 folded-in live-verification items are closed.
 
-**Status (2026-08-25):** all 9 build/red-test tasks complete and reviewed
-clean at the per-task level (`docs/task-logs/T18.md`, `.superpowers/sdd/
-2026-08-24-t18-cloud-container-hardening/progress.md`). The full verification
-suite was run for real; one test initially failed
+**Status (2026-08-26): merged (PR #35, commit
+`b3cca363dc8d47b3454c922b6ed77b015d1403d2`).** All 9 build/red-test tasks
+were complete and reviewed clean at the per-task level (`docs/task-logs/T18.md`,
+`.superpowers/sdd/2026-08-24-t18-cloud-container-hardening/progress.md`). The
+full verification suite was run for real; one test initially failed
 (`tests/security/test_firewall_rules.py`), root-caused to a Windows-sandbox
 git-checkout line-ending artifact (`core.autocrlf=true` corrupting the
 committed LF-only `infra/firewall/rules.nft` to CRLF on disk) and fixed within
 this task via a new root `.gitattributes` (`* text=auto eol=lf`, verified safe
 against this repo's all-Linux CI/deployment target) plus a forced
-renormalization of the two affected files. `uv run pytest -m security -q` now
-passes clean: 92 passed, 0 failed, 52 skipped — **the security suite now
-passes, satisfying that half of this section's "Done when" gate.** **Not yet
-done**: the independent whole-branch security review and PR/merge (pending,
-separate from this verification pass), and both folded-in live-verification
-items (real STOP from the enrolled Telegram chat; real 07:00-07:05 Pacific
-`DAILY_SEND` cron firing) — both documented with exact commands in
-`docs/task-logs/T18.md`, requiring the owner to run live.
+renormalization of the two affected files. The mandatory independent
+whole-branch security review is done: 3 Critical and 9 Important findings, all
+fixed in one bundled fix wave and re-reviewed clean — see `docs/task-logs/T18.md`
+for the full detail, not repeated here. The first real CI run on GitHub
+Actions then found and fixed 4 more genuine Linux-only bugs: a `.dockerignore`
+build-context regression, a test-fixture secret-file permission gap, a
+bind-mount permission gap, and an AppArmor mount-syscall block — again, see
+`docs/task-logs/T18.md` for the per-bug detail. The real exact-STOP
+live-verification test passed for real. **This section's "Done when" gate
+(security suite and external exposure scan pass, both live-verification items
+closed) is now met except for one item**: the real, unmodified 07:00-07:05
+Pacific `DAILY_SEND` cron firing remains open, owner-only, not doable from a
+sandbox — documented with exact commands in `docs/task-logs/T18.md`.
 
 ### T19 — Audit, alerts, backups, and recovery
 
@@ -1150,15 +1156,17 @@ The project is complete only when:
 
 ## 13. Immediate next action
 
-Begin T12 (approved queue and safe reserve) from the audited T01-T11
-foundation. T11 leaves `judging/pipeline.py`'s `evaluate_message_safety`
-producing a `SafetyDecision` per candidate sentence; T12 turns approved
-decisions into a durably persisted queue against the existing SQLite
-`Database` boundary, maintaining at least 30 approved messages plus a small
-safe reserve, with atomic reservation and queue-health alerts. Red tests:
-discovery failure preserves the existing queue, rejected candidates never
-enter the queue, queue refill cannot modify already-sent records,
-exhaustion selects only from the pre-approved reserve, and no reserve means
-no send -- keep the same fail-closed posture T11 established (an empty or
-exhausted reserve is a skipped send, never a fallback to an unapproved
-sentence).
+This section previously still described beginning T12 -- stale since T12
+shipped, and never updated across T13 through T18. Corrected here.
+
+Begin T19 (audit, alerts, backups, and recovery) from the merged T18
+foundation. Dependencies: T03, T12, T18 -- all complete. Red tests: logs
+contain no protected data or raw scraped text; forced permanent failure
+alerts the owner; an encrypted backup restores into a fresh real SQLite
+database; restored history preserves idempotency; an optional GitHub export
+excludes phone, voice, session, and secret fields; disk and queue exhaustion
+alert safely. Implementation: structured redacted logs with rotation, owner
+alerts for queue exhaustion/session loss/missed delivery/disk pressure/
+service failure, encrypted daily backups with an external recovery key, and
+a documented restore drill. Done when a fresh environment can restore safely
+and continue without duplicate delivery.

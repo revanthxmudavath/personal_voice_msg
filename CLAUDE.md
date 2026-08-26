@@ -68,7 +68,7 @@ in one change.
 
 ## Current architecture snapshot (detail: AGENTS.md §Confirmed stack)
 
-T00 through T17b are complete and merged to `main`. `AGENTS.md` §Current
+T00 through T18 are complete and merged to `main`. `AGENTS.md` §Current
 status and blockers is the authoritative task-by-task record — always
 check it fresh each session; this file does not track task-by-task state
 (see the note at the top of this file) precisely so it can't go stale the
@@ -76,7 +76,10 @@ way this section itself once did. T09 benchmarked LangChain/Gemini and
 rejected it: **deterministic T07 discovery is the production path.** The
 sender migrated from WAHA to the Telegram Bot API in T16b after
 self-hosted WhatsApp-Web automation was confirmed permanently blocked at
-the account level (`docs/research/waha-alternatives.md`).
+the account level (`docs/research/waha-alternatives.md`). T18 added
+container and network hardening: a pinned non-root Docker image, a
+two-service `docker-compose.yml` (app + discovery, separate
+networks/volumes), and firewall/WireGuard/SSH infra-as-code under `infra/`.
 
 **Correction (found during the pre-T18 reverification audit, 2026-08-24):**
 this section previously described T16 as "in progress ... not yet merged"
@@ -93,13 +96,19 @@ uv sync --locked
 uv run pytest -m fast
 uv run pytest -m integration
 uv run pytest -m security
+uv run pytest -m docker
 uv run ruff check .
 uv run mypy src
 uv run python scripts/repository_policy.py all --root .
 ```
 
 `live` and `e2e` suites are opt-in and must never target production
-recipients or the real voice/session.
+recipients or the real voice/session. `docker` is a subset marker always
+combined with `-m security`/`-m integration` (e.g. tests carry both
+`@pytest.mark.security` and `@pytest.mark.docker`), never run standalone —
+covering tests that build the project's Docker image or bring up the
+`docker compose` stack, split into their own CI job because they take
+several minutes and need a working Docker daemon.
 
 ## Context & Session Management
 
