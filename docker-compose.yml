@@ -13,8 +13,15 @@ name: personal_voice_msg
 #   SECRET_ROOT=... APP_CONFIG_DIR=... docker compose build
 #   docker inspect personal-voice-msg:t18 --format '{{.Id}}'
 # -> sha256:753e8da1c8e57be0e94210725b1503839a65367f1899f6cde57e1cfa72403e36
-# (confirmed reproducible: two consecutive `docker compose build` runs
-# resolved the identical .Id)
+# (reproducible across repeated builds *on the machine that resolved it*:
+# two consecutive `docker compose build` runs there produced the identical
+# .Id. Confirmed by the final-review re-review pass that this is NOT a
+# portable pin across machines/BuildKit versions/mirror snapshots -- a
+# different sandbox rebuilding the identical Dockerfile content resolved a
+# different, itself internally-reproducible .Id. Since no test asserts on
+# this literal string, that's a documentation-accuracy issue, not a
+# functional one; treat the value below as "what to expect on the machine
+# that recorded it," not a cross-machine content hash.)
 # Only `app` declares `build:` -- `discovery` below intentionally has none
 # and just references the tag `app`'s build produces. This is not
 # stylistic: when both services declared `build: .` against the same
@@ -46,8 +53,10 @@ name: personal_voice_msg
 # rebuild via `docker compose build` (not plain `docker build`, which
 # resolves to a different, also-stable value because it skips Compose's
 # bake path and its service labels entirely) + rerun
-# tests/security/test_container_image.py and this file's suite, and
-# confirm the `.Id` above still matches.
+# tests/security/test_container_image.py and this file's suite. Re-resolve
+# and update the `.Id` above on the machine doing the requalification --
+# don't expect it to match this recorded value if you're on different
+# hardware/Docker version than whoever last recorded it (see the note above).
 services:
   app:
     image: personal-voice-msg:t18
