@@ -14,3 +14,4 @@ __pycache__/
 node_modules/
 CODE_REVIEW_PROMPTS/
 .worktrees/
+.superpowers/
