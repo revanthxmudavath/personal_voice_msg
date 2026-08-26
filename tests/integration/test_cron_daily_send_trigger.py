@@ -82,8 +82,33 @@ def _deployment_env(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
     # /secrets separation that finding C2 was actually about are covered
     # for real, with a `production` profile and real chown/chmod, by
     # tests/security/test_container_config_loads.py.
+    #
+    # `development`-profile exemption above is about config.py's own
+    # *application-level* ownership/mode check, not basic OS-level
+    # read/traverse permission -- that applies regardless of profile.
+    # `tmp_path_factory.mktemp()` creates directories 0o700 (owner-only) on
+    # a real POSIX CI runner. The bind mount does not remap uids: `appuser`
+    # inside the container is uid 10001, a *different* uid than the CI
+    # runner process that owns this directory, so with a 0o700 mode
+    # `appuser` has no traverse permission on the directory at all and
+    # `read_toml()`'s `config_path.read_text()` fails with a raw OSError --
+    # surfaced by config.py as "configuration file is unreadable or
+    # invalid" (confirmed against a real GitHub Actions run; this exact
+    # failure does not reproduce on this project's own Windows/Docker
+    # Desktop sandbox, whose bind-mount layer does not carry host POSIX
+    # permission bits the same way, so this chmod is verified by code
+    # inspection and by matching test_container_config_loads.py's own
+    # working chown/chmod pattern, not by a local repro of the failure
+    # itself). 0o755/0o644 mirror that sibling test's real production
+    # mode expectations closely enough for traversal+read while staying
+    # permissive enough for any uid.
+    secret_root.chmod(0o755)
+    for secret_file in secret_root.iterdir():
+        secret_file.chmod(0o644)
     config_dir = tmp_path_factory.mktemp("t18-cron-conf")
     (config_dir / "app.toml").write_text(APP_TOML)
+    config_dir.chmod(0o755)
+    (config_dir / "app.toml").chmod(0o644)
     # Exported into this process's environment too, not just returned:
     # docker-compose.yml declares both with Compose's required-variable
     # syntax and *every* compose subcommand interpolates the whole file,

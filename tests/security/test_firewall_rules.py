@@ -118,10 +118,22 @@ def _wait_until_running(container: str, timeout: float = 10.0) -> None:
         if result.stdout.strip() == "true":
             return
         time.sleep(0.3)
+    # Captured here, not just referenced by name: the container is gone (or
+    # about to be `docker rm -f`'d by the caller's `finally`) by the time a
+    # human reads a CI log, so a bare "see `docker logs <container>`"
+    # pointer is not actually actionable after the fact. This is what made
+    # T18's real GHA-only failure (PID 1 -- the WG_HARNESS_SCRIPT -- exiting
+    # before the keep-alive `sleep`) take a full CI round-trip to even see
+    # the underlying error the first time.
+    logs = subprocess.run(
+        ["docker", "logs", container],
+        capture_output=True, text=True, timeout=10,
+    )
     raise RuntimeError(
-        f"container {container} never reached a running state -- see "
-        f"`docker logs {container}` for why (e.g. nft -f failing would "
-        f"exit the container's PID 1 before the sleep 30 keeps it alive)"
+        f"container {container} never reached a running state (e.g. "
+        f"`nft -f` or the harness script failing would exit the "
+        f"container's PID 1 before its keep-alive `sleep` is reached). "
+        f"docker logs stdout:\n{logs.stdout}\ndocker logs stderr:\n{logs.stderr}"
     )
 
 
@@ -299,6 +311,27 @@ def test_inbound_traffic_over_the_wireguard_interface_is_accepted() -> None:
             [
                 "docker", "run", "-d", "--name", container,
                 "--cap-add", "NET_ADMIN", "--cap-add", "SYS_ADMIN",
+                # `ip netns add` bind-mounts /proc/self/ns/net onto
+                # /var/run/netns/<name> internally (that's how Linux network
+                # namespaces get a filesystem handle), so it issues a real
+                # `mount` syscall. Docker's default `docker-default` AppArmor
+                # profile denies `mount` unconditionally -- regardless of
+                # granted capabilities, AppArmor is enforced independently of
+                # (and on top of) the capability set. This project's own
+                # Docker Desktop sandbox does not enforce AppArmor at all
+                # (`docker info`'s Security Options here list only `seccomp`,
+                # no `apparmor`), so this harness passes locally either way;
+                # GitHub Actions' `ubuntu-latest` runner is real Ubuntu with
+                # AppArmor enabled and enforcing, and Docker there applies
+                # `docker-default` by default, which is the real, specific
+                # reason this test failed only in real CI (confirmed: the
+                # sibling nft-only test, which never calls `ip netns add` and
+                # so never issues that `mount` syscall, passed in the same
+                # CI run). Disabling AppArmor confinement for JUST this
+                # throwaway verification container -- not `--privileged`,
+                # which would also disable seccomp and grant every
+                # capability -- is the narrowest fix for that exact cause.
+                "--security-opt", "apparmor=unconfined",
                 "-v", f"{RULES_PATH}:/rules.nft:ro",
                 image, "sh", "-c", WG_HARNESS_SCRIPT,
             ],
