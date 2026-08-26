@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import argparse
 import ast
-import io
 import re
 import subprocess
 import sys
 import tarfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import cast
+from typing import IO, cast
 
 import yaml
 
@@ -330,6 +329,50 @@ def check_git_history(root: Path) -> list[str]:
     return violations
 
 
+# Chunked reads, with an overlap carried between chunks so a credential
+# straddling a chunk boundary is still matched. 512 bytes is far longer than
+# the longest pattern any detector looks for (a GitHub token is 40 characters
+# after its prefix; the private-key header is ~40).
+_IMAGE_CHUNK_BYTES = 1 << 20
+_IMAGE_OVERLAP_BYTES = 512
+
+
+def _scan_stream_for_secrets(stream: IO[bytes], label: str) -> list[str]:
+    carry = ""
+    first = True
+    while True:
+        block = stream.read(_IMAGE_CHUNK_BYTES)
+        if not block:
+            return []
+        if first:
+            first = False
+            # Compiled ELF objects are skipped for CONTENT scanning only --
+            # their filenames are still checked by the caller. This is not
+            # convenience: run against this project's real image, the
+            # content scan flagged four Debian-provided crypto libraries
+            # (libgio, libgnutls, libmbedcrypto, libssh) as "private key
+            # detected". They genuinely do carry PEM text in .rodata --
+            # libssh keeps the `-----BEGIN ... PRIVATE KEY-----` header
+            # strings it parses, and libgnutls embeds complete PEM test
+            # vectors -- so no amount of tightening the regex (e.g.
+            # requiring a base64 body) distinguishes them. What actually
+            # distinguishes them is that they are compiled artifacts from
+            # the pinned base image and pinned apt packages, not anything
+            # this repository produces or could leak a credential into. A
+            # real leak of this project's credentials lands in a text file
+            # (a config, an env file, a key file, a layer's COPY), never
+            # inside a linker-produced ELF. Skipping ELF is narrower and
+            # more honest than allowlisting four version-numbered paths
+            # that change on every base-image bump.
+            if block.startswith(b"\x7fELF"):
+                return []
+        text = carry + block.decode("utf-8", errors="ignore")
+        violations = _scan_content_for_secrets(text, label)
+        if violations:
+            return violations
+        carry = text[-_IMAGE_OVERLAP_BYTES:]
+
+
 def check_image_secrets(image: str) -> list[str]:
     violations: list[str] = []
     container = subprocess.run(
@@ -339,25 +382,30 @@ def check_image_secrets(image: str) -> list[str]:
         check=True,
     ).stdout.strip()
     try:
-        export = subprocess.run(
-            ["docker", "export", container], capture_output=True, check=True,
+        # Streamed, not buffered. `subprocess.run(..., capture_output=True)`
+        # plus `io.BytesIO` held the entire exported filesystem in memory,
+        # which works for the small synthetic images this function's own
+        # tests build and dies on a real one: this project's own image is
+        # 5.6 GB (the venv carries pocket-tts and its torch dependency), and
+        # the buffered version raised `MemoryError` against it. That is the
+        # concrete reason T18's whole-branch review finding I6 -- "this
+        # check is never actually run against this project's own image" --
+        # mattered: nothing had ever fed it a realistic input.
+        process = subprocess.Popen(  # noqa: S603
+            ["docker", "export", container], stdout=subprocess.PIPE,
         )
-        with tarfile.open(fileobj=io.BytesIO(export.stdout)) as archive:
-            for member in archive.getmembers():
-                # Regular files and hard links carry scannable content.
-                # `archive.extractfile()` resolves a hard link (LNKTYPE) to
-                # its target's bytes automatically -- a hard link is just a
-                # reference to an already-archived member, so this never
-                # touches disk and never fails to resolve. Docker image
-                # layers are full of these: e.g. a base image can hard-link
-                # a sensitively-named path (`/id_rsa`) to a regular file
-                # already present under a different name, and the alias's
-                # own `member.name` must still be checked, not just the
-                # target's. Symlinks are skipped: some point at absolute
-                # paths with no member of their own in the archive (e.g.
-                # /etc/mtab -> /proc/mounts), which would raise when
-                # resolved. Directories and device/fifo entries carry no
-                # content either.
+        assert process.stdout is not None
+        with tarfile.open(fileobj=process.stdout, mode="r|*") as archive:
+            for member in archive:
+                # Regular files and hard links both need their *name*
+                # checked. Docker image layers are full of hard links: a
+                # base image can hard-link a sensitively-named path
+                # (`/id_rsa`) to a regular file already present under a
+                # different name, and the alias's own `member.name` must
+                # still be flagged, not just the target's. Symlinks are
+                # skipped: some point at absolute paths with no member of
+                # their own in the archive (e.g. /etc/mtab -> /proc/mounts).
+                # Directories and device/fifo entries carry no content.
                 if not (member.isfile() or member.islnk()):
                     continue
                 label = member.name
@@ -371,11 +419,25 @@ def check_image_secrets(image: str) -> list[str]:
                         f"sensitive artifact detected in image: {label}"
                     )
                     continue
+                # Content is read only for regular files. In the streaming
+                # mode this now uses, `extractfile()` on a hard link raises
+                # StreamError (it would need to seek backwards to the
+                # target). That loses nothing: a hard link's content is
+                # byte-identical to its target's, and the target is itself
+                # a regular member of the same archive, scanned in its own
+                # right. Only the name check above is alias-specific, and
+                # that still runs for hard links.
+                if not member.isfile():
+                    continue
                 extracted = archive.extractfile(member)
                 if extracted is None:
                     continue
-                content = extracted.read().decode("utf-8", errors="ignore")
-                violations.extend(_scan_content_for_secrets(content, label))
+                violations.extend(_scan_stream_for_secrets(extracted, label))
+        process.stdout.close()
+        if process.wait() != 0:
+            raise subprocess.CalledProcessError(
+                process.returncode, ["docker", "export", container]
+            )
     finally:
         subprocess.run(["docker", "rm", "-f", container], capture_output=True)
     return violations

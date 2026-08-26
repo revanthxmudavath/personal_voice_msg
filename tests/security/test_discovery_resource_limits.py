@@ -17,13 +17,30 @@ enforced values differ from production.
 
 from __future__ import annotations
 
+import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.security
+pytestmark = [pytest.mark.security, pytest.mark.docker]
 
 IMAGE = "personal-voice-msg:t18"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _built_image() -> None:
+    # Built explicitly rather than relying on whichever other module's
+    # fixture happens to be collected first. Layers are cached, so this is
+    # nearly free when the image is already current.
+    here = Path(__file__).resolve().parent
+    built = subprocess.run(
+        ["docker", "compose", "-p", "personal_voice_msg_test",
+         "-f", "docker-compose.yml", "build"],
+        capture_output=True, text=True, timeout=1800,
+        env={**os.environ, "SECRET_ROOT": str(here), "APP_CONFIG_DIR": str(here)},
+    )
+    assert built.returncode == 0, built.stderr
 
 
 def test_pids_limit_blocks_fork_bombing_the_discovery_worker() -> None:

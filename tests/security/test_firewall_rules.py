@@ -43,7 +43,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.security
+pytestmark = [pytest.mark.security, pytest.mark.docker]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RULES_PATH = REPO_ROOT / "infra" / "firewall" / "rules.nft"
@@ -197,3 +197,190 @@ def test_only_wireguard_udp_port_is_reachable_under_the_real_ruleset(
         )
     finally:
         subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+
+
+# Builds two real veth pairs in the throwaway container: one whose
+# host-side interface is literally named `wg0` (what wg-quick creates on the
+# VPS) and one named `other0`, each with its peer parked in its own network
+# namespace. A real TCP listener sits on port 22 in the main namespace. The
+# only difference between the two probes is the name of the interface the
+# packets arrive on -- which is exactly what `iifname "wg0" accept` matches.
+#
+# `ip netns add` bind-mounts /proc/self/ns/net, hence CAP_SYS_ADMIN on this
+# throwaway verification container (nothing in this project's own compose
+# stack gets it).
+WG_HARNESS_SCRIPT = textwrap.dedent(
+    """\
+    set -e
+    ip netns add wgclient
+    ip link add wg0 type veth peer name wgpeer
+    ip link set wgpeer netns wgclient
+    ip addr add 10.99.0.1/24 dev wg0
+    ip link set wg0 up
+    ip netns exec wgclient ip addr add 10.99.0.2/24 dev wgpeer
+    ip netns exec wgclient ip link set wgpeer up
+
+    ip netns add otherclient
+    ip link add other0 type veth peer name otherpeer
+    ip link set otherpeer netns otherclient
+    ip addr add 10.98.0.1/24 dev other0
+    ip link set other0 up
+    ip netns exec otherclient ip addr add 10.98.0.2/24 dev otherpeer
+    ip netns exec otherclient ip link set otherpeer up
+
+    python3 -c "
+    import socket
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('0.0.0.0', 22))
+    s.listen(8)
+    while True:
+        c, _ = s.accept()
+        c.sendall(b'sshd-stand-in')
+        c.close()
+    " &
+    sleep 1
+    nft -f /rules.nft
+    sleep 120
+    """
+)
+
+PROBE_SCRIPT = textwrap.dedent(
+    """\
+    import socket, sys
+    try:
+        s = socket.create_connection((sys.argv[1], 22), timeout=6)
+        print(s.recv(32).decode())
+        s.close()
+    except OSError as exc:
+        print(type(exc).__name__)
+    """
+)
+
+
+def _probe_from(container: str, namespace: str, address: str) -> str:
+    result = subprocess.run(
+        [
+            "docker", "exec", container,
+            "ip", "netns", "exec", namespace,
+            "python3", "-c", PROBE_SCRIPT, address,
+        ],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"the probe helper itself failed to run: {result.stderr}"
+    )
+    return result.stdout.strip()
+
+
+def test_inbound_traffic_over_the_wireguard_interface_is_accepted() -> None:
+    """T18 whole-branch review finding C3: the input chain had `policy drop`
+    and no rule for traffic arriving *inside* the tunnel, so the owner's SSH
+    session over the VPN would have been silently dropped even though
+    UDP/51820 (the tunnel's own transport) was open -- a real self-lockout
+    the moment the ruleset was applied on the VPS.
+
+    Honest scope: this does not stand up a real WireGuard tunnel (no VPS,
+    no real keys -- see the module docstring and the design spec). It proves
+    the thing the rule actually depends on and the thing that was actually
+    broken: that netfilter accepts new inbound TCP arriving on an interface
+    named `wg0` under this exact ruleset, and drops the identical
+    connection when the only thing changed is the interface name. Whether
+    wg-quick names the VPS interface `wg0` is the runbook's business
+    (infra/wireguard/wg0.conf.template / `wg-quick up wg0`), and the runbook
+    now also requires the owner to confirm a second SSH session over the VPN
+    works before closing the one that applied the ruleset.
+    """
+
+    image = _resolve_nft_image()
+    container = f"t18-wg-{uuid.uuid4().hex[:8]}"
+    try:
+        subprocess.run(
+            [
+                "docker", "run", "-d", "--name", container,
+                "--cap-add", "NET_ADMIN", "--cap-add", "SYS_ADMIN",
+                "-v", f"{RULES_PATH}:/rules.nft:ro",
+                image, "sh", "-c", WG_HARNESS_SCRIPT,
+            ],
+            check=True, capture_output=True, text=True, timeout=60,
+        )
+        _wait_until_running(container)
+        time.sleep(4)
+
+        accepted = _probe_from(container, "wgclient", "10.99.0.1")
+        assert accepted == "sshd-stand-in", (
+            "expected a NEW inbound TCP connection arriving on the "
+            "interface named wg0 to be accepted by `iifname \"wg0\" "
+            "accept` and reach the listener on port 22. Got "
+            f"{accepted!r} -- 'TimeoutError' here is the self-lockout "
+            "finding C3 described: the tunnel is up but nothing inside "
+            "it works."
+        )
+
+        # Negative control: without it, this test would also pass on a
+        # ruleset with no `policy drop` at all (i.e. one that accepts
+        # everything), which proves nothing about the wg0 rule.
+        dropped = _probe_from(container, "otherclient", "10.98.0.1")
+        assert dropped == "TimeoutError", (
+            "expected the identical connection arriving on a non-wg0 "
+            "interface to be silently dropped by the input chain's "
+            f"`policy drop`; got {dropped!r}. If this connected, the "
+            "ruleset is not default-deny and the positive result above "
+            "says nothing about the wg0 rule specifically."
+        )
+    finally:
+        subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+
+
+def test_the_wireguard_accept_rule_precedes_nothing_that_could_shadow_it() -> None:
+    """Ordering guard, cheap and file-level: nftables evaluates an input
+    chain top-to-bottom and `policy drop` applies only after every rule has
+    been considered, so the wg0 accept cannot be "too late" relative to the
+    policy -- but it CAN be shadowed by an earlier terminating rule. Assert
+    that no `drop`/`reject` rule appears before it."""
+
+    lines = [
+        line.strip()
+        for line in RULES_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    input_chain: list[str] = []
+    inside = False
+    for line in lines:
+        if line.startswith("chain input"):
+            inside = True
+            continue
+        if inside:
+            if line == "}":
+                break
+            input_chain.append(line)
+
+    # input_chain[0] is the chain declaration, whose `policy drop` is the
+    # chain's *default*, applied only after every rule has been considered
+    # -- not a rule that can shadow anything.
+    declaration, rules = input_chain[0], input_chain[1:]
+    assert declaration.startswith("type filter hook input"), declaration
+    assert "policy drop" in declaration, (
+        "the input chain must stay default-deny; the wg0 accept is an "
+        f"exception to it, not a replacement for it. Got: {declaration}"
+    )
+
+    assert any(line.startswith('iifname "wg0" accept') for line in rules), (
+        f"infra/firewall/rules.nft's input chain must accept traffic "
+        f"arriving inside the WireGuard tunnel; rules were: {rules}"
+    )
+    index = next(
+        i for i, line in enumerate(rules)
+        if line.startswith('iifname "wg0" accept')
+    )
+    earlier = rules[:index]
+    assert not any(
+        line.startswith("drop")
+        or line.startswith("reject")
+        or " drop" in line
+        or " reject" in line
+        for line in earlier
+    ), (
+        f"a terminating drop/reject rule precedes the wg0 accept and would "
+        f"shadow it: {earlier}"
+    )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 import sys
 import tarfile
@@ -65,6 +66,55 @@ def test_check_image_secrets_catches_a_secret_baked_into_a_layer(
         subprocess.run(["docker", "rmi", "-f", image_tag], capture_output=True)
 
 
+def test_check_image_secrets_skips_elf_content_but_not_plain_text(
+    tmp_path: Path,
+) -> None:
+    # Run against this project's real 5.6 GB image, the content scan
+    # reported "private key detected" for four Debian-provided crypto
+    # libraries (libgio, libgnutls, libmbedcrypto, libssh). Those hits are
+    # genuine PEM text in .rodata -- libssh stores the header strings it
+    # parses, libgnutls embeds whole PEM test vectors -- so tightening the
+    # regex cannot separate them from a real key. `check_image_secrets`
+    # therefore skips CONTENT scanning for members whose first bytes are
+    # the ELF magic, and only for those.
+    #
+    # This plants both halves in one real image and asserts the split: a
+    # file that starts with the ELF magic and then carries a PEM header is
+    # ignored, while the identical PEM header in a plain-text file is still
+    # caught. The rule under test is literally "starts with \x7fELF", so
+    # writing those four bytes exercises the real rule -- no compiler
+    # needed and nothing stubbed.
+    # Split so this source file does not itself trip `check_secrets`, the
+    # same trick the `"AIza" + "b" * 35` fixture above uses. The value is
+    # the real, contiguous PEM header at runtime.
+    header = "-----BEGIN RSA PRIVATE" + " KEY-----"
+    (tmp_path / "fake-elf.so").write_bytes(b"\x7fELF" + header.encode())
+    (tmp_path / "leaked.txt").write_text(header, encoding="utf-8")
+    (tmp_path / "Dockerfile").write_text(
+        "FROM busybox\nCOPY fake-elf.so /fake-elf.so\nCOPY leaked.txt /leaked.txt\n",
+        encoding="utf-8",
+    )
+    image_tag = "t18-repo-policy-elf-image"
+    subprocess.run(
+        ["docker", "build", "-t", image_tag, str(tmp_path)],
+        check=True, capture_output=True,
+    )
+    try:
+        violations = check_image_secrets(image_tag)
+    finally:
+        subprocess.run(["docker", "rmi", "-f", image_tag], capture_output=True)
+
+    assert any("leaked.txt" in v for v in violations), (
+        f"a PEM private-key header in a plain-text file must still be "
+        f"caught -- the ELF skip must not become a blanket binary skip. "
+        f"Violations were: {violations}"
+    )
+    assert not any("fake-elf.so" in v for v in violations), (
+        f"content inside an ELF object must not be scanned. Violations "
+        f"were: {violations}"
+    )
+
+
 def test_check_image_secrets_catches_a_sensitive_name_reachable_only_via_a_hard_link(
     tmp_path: Path,
 ) -> None:
@@ -117,3 +167,37 @@ def test_check_image_secrets_catches_a_sensitive_name_reachable_only_via_a_hard_
         assert any("id_rsa" in v for v in violations), violations
     finally:
         subprocess.run(["docker", "rmi", "-f", image_tag], capture_output=True)
+
+
+@pytest.mark.docker
+def test_this_projects_own_built_image_contains_no_secrets() -> None:
+    """T18 whole-branch review finding I6: `check_image_secrets` was correct,
+    and tested against a synthetic image with a planted secret, but was
+    *never run against this project's own image* -- not by CI, not by the
+    runbook, not by any test. It is deliberately excluded from the `all`
+    dispatch (it needs an explicit --image), so nothing would ever have
+    caught a real credential baked into a real layer.
+
+    This runs the real check against the real tag `docker compose build`
+    produces -- the same thing `infra/RUNBOOK.md`'s build step and CI's
+    t18-container-security job now invoke via
+    `repository_policy.py image --image personal-voice-msg:t18`.
+    """
+
+    here = Path(__file__).resolve().parent
+    built = subprocess.run(
+        ["docker", "compose", "-p", "personal_voice_msg_test",
+         "-f", "docker-compose.yml", "build"],
+        capture_output=True, text=True, timeout=1800,
+        # docker-compose.yml declares SECRET_ROOT/APP_CONFIG_DIR with
+        # Compose's required-variable syntax, and `build` still interpolates
+        # the whole file, so both must be set to *something* that exists.
+        # Neither is mounted by a build.
+        env={**os.environ, "SECRET_ROOT": str(here), "APP_CONFIG_DIR": str(here)},
+    )
+    assert built.returncode == 0, built.stderr
+
+    assert check_image_secrets("personal-voice-msg:t18") == [], (
+        "the built application image contains something the secret scanner "
+        "recognises as a credential or a sensitive artifact name"
+    )

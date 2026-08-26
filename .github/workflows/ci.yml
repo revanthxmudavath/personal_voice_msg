@@ -11,17 +11,31 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # fetch-depth: 0 is load-bearing, not a convenience. The default
+          # shallow checkout (depth 1) leaves ~86% of this repository's
+          # object graph unreachable, so `repository_policy.py`'s
+          # check_git_history -- whose entire point is walking every blob
+          # reachable from any ref via `git rev-list --all --objects` to
+          # catch a secret that was committed and later deleted -- would
+          # only ever see the tip commit and pass vacuously.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
           python-version: "3.12"
       - run: uv sync --locked
-      - run: uv run pytest -m fast
+      # `not docker` on the two heavy selectors: the Docker-backed T18 tests
+      # (build the image, bring the compose stack up repeatedly, run real
+      # resource-exhaustion fault injection) run in the dedicated
+      # t18-container-security job below instead, matching how this file
+      # already gives T06's and T07's own container suites their own jobs.
+      - run: uv run pytest -m "fast and not docker"
       - run: uv run pytest tests/integration/test_discovery_decoder_network.py
-      - run: uv run pytest -m security
+      - run: uv run pytest -m "security and not docker"
       - run: uv run ruff check .
       - run: uv run mypy src
       - run: uv run python scripts/repository_policy.py all --root .
@@ -45,3 +59,35 @@ jobs:
       - run: docker compose -p personal-voice-msg-t07 -f tests/integration/t07/compose.yml up --build --abort-on-container-exit --exit-code-from runner
       - if: always()
         run: docker compose -p personal-voice-msg-t07 -f tests/integration/t07/compose.yml down --remove-orphans
+
+  # T18's container/network hardening suite. Split out of `quality` for the
+  # same reason t06/t07 above are: it builds real images and brings real
+  # compose stacks up several times over, which does not fit inside a
+  # lint-and-unit-test job's budget. 60 minutes is deliberately generous and
+  # measured, not guessed: a cold image build (ffmpeg + nftables from apt,
+  # the supercronic download), several compose up/down cycles, a >70s real
+  # wall-clock wait for cron to fire, real fork-bomb/OOM fault injection,
+  # and -- the single slowest step -- the built-image secret scan, which
+  # streams and regex-scans the whole 5.6 GB image filesystem and took
+  # ~7.5 minutes locally.
+  t18-container-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run pytest -m docker -v
+      # check_image_secrets is the one repository_policy check that cannot
+      # run under `all` (it needs an explicit --image and a built image), so
+      # without this step nothing anywhere would ever run it against this
+      # project's own image. `-m docker` above builds the tag.
+      - run: uv run python scripts/repository_policy.py image --image personal-voice-msg:t18
+      - if: always()
+        run: docker compose -p personal_voice_msg_test -f docker-compose.yml down -v --remove-orphans
+        env:
+          SECRET_ROOT: /tmp
+          APP_CONFIG_DIR: /tmp

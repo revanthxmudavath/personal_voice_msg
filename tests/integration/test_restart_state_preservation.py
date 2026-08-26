@@ -5,9 +5,15 @@ import subprocess
 
 import pytest
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.docker]
 
-COMPOSE = ["docker", "compose", "-f", "docker-compose.yml"]
+# `-p personal_voice_msg_test`: both tests below tear down with `down -v`.
+# Sharing docker-compose.yml's production project name would mean running
+# this suite on the deployed host destroys the real `db_data` volume.
+COMPOSE = [
+    "docker", "compose", "-p", "personal_voice_msg_test",
+    "-f", "docker-compose.yml",
+]
 
 
 def _full_env(overrides: dict[str, str]) -> dict[str, str]:
@@ -19,9 +25,10 @@ def _full_env(overrides: dict[str, str]) -> dict[str, str]:
 def _secret_root_env(
     tmp_path_factory: pytest.TempPathFactory, name: str
 ) -> dict[str, str]:
-    # See test_cron_daily_send_trigger.py for why SECRET_ROOT must be set
-    # explicitly: left unset, Compose/Docker silently bind-mount this repo
-    # checkout at /secrets instead of failing.
+    # SECRET_ROOT and APP_CONFIG_DIR are both declared with Compose's
+    # required-variable syntax (${VAR:?...}) in docker-compose.yml, so an
+    # unset variable now fails loudly instead of silently bind-mounting the
+    # current working directory (this whole repo checkout) at /secrets.
     secret_root = tmp_path_factory.mktemp(name)
     (secret_root / "telegram_chat_id.json").write_text(
         '{"profile": "development", "telegram_chat_id": 1}'
@@ -29,7 +36,26 @@ def _secret_root_env(
     (secret_root / "telegram-token.txt").write_text("x" * 40)
     (secret_root / "voice.embedding").write_bytes(b"x")
     (secret_root / "sender-auth-key.txt").write_text("x" * 32)
-    return _full_env({"SECRET_ROOT": str(secret_root)})
+    config_dir = tmp_path_factory.mktemp(f"{name}-conf")
+    # Exported into this process's environment too, not just returned:
+    # docker-compose.yml declares both with Compose's required-variable
+    # syntax and *every* compose subcommand interpolates the whole file,
+    # including the bare `docker compose exec` / `restart` calls below.
+    os.environ["SECRET_ROOT"] = str(secret_root)
+    os.environ["APP_CONFIG_DIR"] = str(config_dir)
+    env = _full_env({
+        "SECRET_ROOT": str(secret_root),
+        "APP_CONFIG_DIR": str(config_dir),
+    })
+    # Built explicitly rather than relying on another module's fixture
+    # having run first (collection order across directories is an accident,
+    # not a contract). Layers are cached, so this is nearly free.
+    built = subprocess.run(
+        COMPOSE + ["build"], capture_output=True, text=True,
+        timeout=1800, env=env,
+    )
+    assert built.returncode == 0, built.stderr
+    return env
 
 
 def test_appuser_can_write_to_the_data_volume(
@@ -65,7 +91,7 @@ def test_appuser_can_write_to_the_data_volume(
         )
         assert read_back.stdout.strip() == "write-ok"
     finally:
-        subprocess.run(COMPOSE + ["down", "-v"], capture_output=True)
+        subprocess.run(COMPOSE + ["down", "-v"], capture_output=True, env=env)
 
 
 def test_restart_preserves_the_data_volume_and_drops_tmpfs_writes(
@@ -108,4 +134,4 @@ def test_restart_preserves_the_data_volume_and_drops_tmpfs_writes(
         assert persisted.stdout.strip() == "persisted"
         assert transient.returncode != 0
     finally:
-        subprocess.run(COMPOSE + ["down", "-v"], capture_output=True)
+        subprocess.run(COMPOSE + ["down", "-v"], capture_output=True, env=env)

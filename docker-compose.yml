@@ -6,10 +6,15 @@
 # name this file's own tests assert on.
 name: personal_voice_msg
 
-# Image digest pinned 2026-08-24 via the build path this file itself uses:
-#   docker compose build
+# Image digest re-resolved 2026-08-25 via the build path this file itself
+# uses (the previously recorded value went stale when Task 7's /data chown
+# changed the image, and again when the whole-branch review's C1 fix added
+# nftables + infra/firewall/ + the discovery entrypoint):
+#   SECRET_ROOT=... APP_CONFIG_DIR=... docker compose build
 #   docker inspect personal-voice-msg:t18 --format '{{.Id}}'
-# -> sha256:53d2d4cde462ad01b36fc7aadc16ea8a7fb2c5bcf99e9f528753d55cea05a9fb
+# -> sha256:753e8da1c8e57be0e94210725b1503839a65367f1899f6cde57e1cfa72403e36
+# (confirmed reproducible: two consecutive `docker compose build` runs
+# resolved the identical .Id)
 # Only `app` declares `build:` -- `discovery` below intentionally has none
 # and just references the tag `app`'s build produces. This is not
 # stylistic: when both services declared `build: .` against the same
@@ -20,7 +25,9 @@ name: personal_voice_msg
 # both targets raced to tag the one shared name -- confirmed empirically,
 # repeated `docker compose build` runs alternated the resolved `.Id`
 # between sha256:53d2d4cde462...05a9fb (app's target) and
-# sha256:5087c5c6a27b...33875c (discovery's target) depending purely on
+# sha256:5087c5c6a27b...33875c (discovery's target) -- both historical
+# values from that 2026-08-24 experiment, superseded by the pin above --
+# depending purely on
 # which target's "naming to ..." step finished last. Building only `app`
 # (`docker compose build app`, or the whole-file `docker compose build`
 # now that `discovery` has no build target of its own to race) reproduced
@@ -57,9 +64,31 @@ services:
     networks: [app_net]
     volumes:
       - db_data:/data
+      # `:?` (Compose's required-variable syntax) rather than a bare
+      # ${SECRET_ROOT}: an unset variable resolves to the empty string,
+      # which Docker then resolves to the *current working directory* --
+      # i.e. `docker compose up` with SECRET_ROOT unset silently bind-mounts
+      # this entire repository checkout at /secrets instead of failing.
+      # Confirmed empirically via `docker compose config` before this fix.
       - type: bind
-        source: ${SECRET_ROOT}
+        source: ${SECRET_ROOT:?SECRET_ROOT must point at the deployment secret directory (see infra/RUNBOOK.md)}
         target: /secrets
+        read_only: true
+      # The application's TOML config file lives on a SEPARATE mount from
+      # the secrets, and this is required, not stylistic: config.py's
+      # `secret_root()` rejects (for non-development profiles) any
+      # secret_root at or below the config file's own resolved "project
+      # root", and `_project_root()` falls back to the config file's own
+      # directory when no pyproject.toml/.git is found above it -- which is
+      # exactly the case inside this image. With app.toml under /secrets,
+      # secret_root="/secrets" fails closed with "deployed secret root must
+      # be outside the project directory". /conf + /secrets is the layout
+      # that actually loads; proved by
+      # tests/security/test_container_config_loads.py, which runs the
+      # literal scripts/crontab argument string inside the built image.
+      - type: bind
+        source: ${APP_CONFIG_DIR:?APP_CONFIG_DIR must point at the directory holding app.toml (see infra/RUNBOOK.md)}
+        target: /conf
         read_only: true
     # supercronic (installed by the Dockerfile) runs as PID 1 and fires
     # scripts/crontab's daily-send entrypoint on its declared schedule.
@@ -72,11 +101,37 @@ services:
     # `services:`. `app`'s `build: .` is the single source of this image;
     # `discovery` just runs the tag `app` produces, avoiding the two-target
     # tag-write race that made the pinned digest non-reproducible.
-    user: "10001"
+    # `user: "0"` here, unlike `app`'s `user: "10001"` -- and this is the
+    # one deliberate deviation from "every container runs as 10001 from
+    # PID 1". (It has to be stated explicitly: the Dockerfile ends with
+    # `USER appuser`, so simply omitting this key would start the
+    # entrypoint as 10001 and `nft -f` would fail with "netlink: Error:
+    # cache initialization failed: Operation not permitted" -- capabilities
+    # in the bounding set are useless to a non-root process.) The
+    # entrypoint below starts as uid 0 solely to load
+    # infra/firewall/discovery_egress.nft into this container's own network
+    # namespace (needs CAP_NET_ADMIN), then permanently drops to
+    # uid/gid 10001 with all capabilities cleared before exec'ing the
+    # workload. `docker compose exec` therefore defaults to root here; pass
+    # `--user 10001` when a probe needs to run as the workload identity.
+    # The running workload's real identity is asserted for real (uid 10001,
+    # CapEff 0, NoNewPrivs 1, read from /proc/1/status) by
+    # tests/security/test_discovery_egress_filter.py rather than inferred
+    # from this key.
+    user: "0"
+    entrypoint: ["/app/scripts/discovery_entrypoint.sh"]
     read_only: true
     tmpfs:
       - /tmp
     cap_drop: ["ALL"]
+    # NET_ADMIN: load the egress ruleset. SETUID/SETGID: drop back to
+    # uid 10001 afterwards (a uid-0 process with no CAP_SETUID cannot call
+    # setresuid at all -- verified: "setpriv: setresuid failed: Operation
+    # not permitted"). Nothing else is added back, and `app` gets none of
+    # them. See scripts/discovery_entrypoint.sh for the rejected
+    # alternatives (file capabilities are inert under no-new-privileges;
+    # a NET_ADMIN sidecar fails open on a start-order race).
+    cap_add: ["NET_ADMIN", "SETUID", "SETGID"]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 64
     mem_limit: 1g

@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-pytestmark = pytest.mark.security
+pytestmark = [pytest.mark.security, pytest.mark.docker]
 
 IMAGE = "personal-voice-msg:t18-dev"
 

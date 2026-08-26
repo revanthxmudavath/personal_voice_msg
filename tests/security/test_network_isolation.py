@@ -1,3 +1,16 @@
+"""Container-to-container isolation between `app` and `discovery`.
+
+Egress *out of* `discovery` towards private/RFC1918/link-local/cloud-
+metadata address space is covered separately and for real by
+tests/security/test_discovery_egress_filter.py. A weak
+`test_discovery_cannot_reach_a_private_network_address` used to live here
+and asserted only `returncode != 0` against 192.168.1.1 -- an address
+nothing answers at on a typical developer host, so it timed out and
+"passed" whether or not anything was blocking it. It was removed rather
+than patched: proving that block needs the nftables counter readout the
+dedicated module does, not another exec probe against this stack.
+"""
+
 from __future__ import annotations
 
 import os
@@ -5,9 +18,18 @@ import subprocess
 
 import pytest
 
-pytestmark = pytest.mark.security
+pytestmark = [pytest.mark.security, pytest.mark.docker]
 
-COMPOSE = ["docker", "compose", "-f", "docker-compose.yml"]
+# `-p personal_voice_msg_test`: docker-compose.yml pins
+# `name: personal_voice_msg` for the real deployment, and the teardown
+# below runs `down -v`. Sharing that project name would mean running this
+# repo's test suite on the production host destroys the real `db_data`
+# volume. The distinct project name makes that impossible; infra/RUNBOOK.md
+# additionally tells the owner never to run pytest there at all.
+COMPOSE = [
+    "docker", "compose", "-p", "personal_voice_msg_test",
+    "-f", "docker-compose.yml",
+]
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -19,11 +41,22 @@ def _compose_stack(tmp_path_factory: pytest.TempPathFactory):
     (secret_root / "telegram-token.txt").write_text("x" * 40)
     (secret_root / "voice.embedding").write_bytes(b"x")
     (secret_root / "sender-auth-key.txt").write_text("x" * 32)
-    env = _full_env({"SECRET_ROOT": str(secret_root)})
-    subprocess.run(["docker", "compose", "build"], check=True, capture_output=True)
+    config_dir = tmp_path_factory.mktemp("t18-net-conf")
+    env = _full_env({
+        "SECRET_ROOT": str(secret_root),
+        "APP_CONFIG_DIR": str(config_dir),
+    })
+    # Exported into this process's environment too: docker-compose.yml
+    # declares both with Compose's required-variable syntax and *every*
+    # compose subcommand interpolates the whole file, including the bare
+    # `docker compose exec` calls below.
+    os.environ.update(
+        {"SECRET_ROOT": env["SECRET_ROOT"], "APP_CONFIG_DIR": env["APP_CONFIG_DIR"]}
+    )
+    subprocess.run(COMPOSE + ["build"], check=True, capture_output=True, env=env)
     subprocess.run(COMPOSE + ["up", "-d"], check=True, capture_output=True, env=env)
     yield
-    subprocess.run(COMPOSE + ["down", "-v"], capture_output=True)
+    subprocess.run(COMPOSE + ["down", "-v"], capture_output=True, env=env)
 
 
 def _full_env(overrides: dict[str, str]) -> dict[str, str]:
@@ -33,9 +66,13 @@ def _full_env(overrides: dict[str, str]) -> dict[str, str]:
 
 
 def _exec(service: str, *cmd: str) -> subprocess.CompletedProcess[str]:
+    # `--user 10001` explicitly: `discovery` no longer declares `user:` in
+    # docker-compose.yml (its entrypoint starts as uid 0 to load the egress
+    # ruleset, then drops), so an unqualified exec would run as root and
+    # probe as an identity the real workload never has.
     return subprocess.run(
-        COMPOSE + ["exec", "-T", service, *cmd],
-        capture_output=True, text=True, timeout=15,
+        COMPOSE + ["exec", "-T", "--user", "10001", service, *cmd],
+        capture_output=True, text=True, timeout=30,
     )
 
 
@@ -44,12 +81,6 @@ def test_discovery_cannot_reach_the_app_container_at_all() -> None:
         "import socket; socket.create_connection(('app', 80), timeout=3)")
     assert result.returncode != 0
     _assert_dns_isolation_failure(result, hostname="app")
-
-
-def test_discovery_cannot_reach_a_private_network_address() -> None:
-    result = _exec("discovery", "python3", "-c",
-        "import socket; socket.create_connection(('192.168.1.1', 80), timeout=3)")
-    assert result.returncode != 0
 
 
 def test_app_cannot_reach_the_discovery_container() -> None:

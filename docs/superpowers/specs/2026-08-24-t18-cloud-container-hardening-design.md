@@ -212,15 +212,67 @@ Docker socket" — this is enforced by *absence*, verified by a real test
 that `docker exec`s into each container and confirms no socket file and no
 `docker` binary is reachable).
 
-`app`'s egress: allowlisted to the pinned Gemini API host and
-`api.telegram.org` only, enforced by an iptables/nftables egress rule
-applied to `app_net` at compose-up time via a small wrapper script (Docker
-Compose alone cannot express DNS-name-based egress allowlisting; the rule
-matches destination IPs resolved from the two pinned hostnames at rule-apply
-time, re-resolved on each `compose up`). `discovery`'s egress: allowlisted
-to the SearXNG host only, on `discovery_net` — nothing in `app_net` is
-reachable from `discovery_net` because they are separate Docker networks
-with no shared network and no explicit link between them.
+**Egress policy — narrowed, human-confirmed, after the whole-branch review
+(2026-08-25).** This section originally promised hostname-based egress
+allowlisting for `app` (pinned Gemini host + `api.telegram.org`) and a
+SearXNG-only allowlist for `discovery`. Neither was ever implemented, and
+`infra/firewall/rules.nft` carried a comment falsely claiming
+`docker-compose.yml` handled it. Finding C1 of the whole-branch review
+established that `discovery` could in fact reach anything its network could
+route to, including the host itself via its own Docker bridge gateway
+(verified: a connect to the gateway's `:22` returned
+`ConnectionRefusedError`, i.e. packets were reaching the host's own TCP
+stack, so any host-listening port was reachable from the untrusted-content
+container).
+
+The scope confirmed with the owner and now actually implemented is
+narrower and different in kind:
+
+- **`discovery` is blocked, at the network level, from RFC1918
+  (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local
+  (`169.254.0.0/16`) and the cloud instance-metadata address
+  (`169.254.169.254`) — plus the IPv6 equivalents and the two NAT64
+  prefixes.** DNS to Docker's embedded resolver (`127.0.0.11`) and the
+  default route to the public internet stay open. The ruleset is
+  `infra/firewall/discovery_egress.nft`, baked into the image and loaded by
+  `scripts/discovery_entrypoint.sh` with `nft -f` into the container's own
+  network namespace *before* the workload starts; the entrypoint then
+  permanently drops to uid 10001 with no capabilities. This is defense in
+  depth alongside `discovery/web.py`'s existing application-layer
+  `is_public_address()`/NAT64 check, not a replacement for it: the
+  application check protects one HTTP client, the ruleset protects the whole
+  container.
+- **No hostname-based allowlisting for `app`.** Rejected deliberately, on
+  two grounds. (1) Fragility: Gemini and `api.telegram.org` both rotate
+  public IPs, so an allowlist of addresses resolved at compose-up time
+  fails closed at an arbitrary later moment for an entirely legitimate
+  reason — a reliability hazard bought with no real security gain, since an
+  attacker who already has code execution in `app` also has the secrets.
+  (2) Trust boundary: `app` is not where untrusted content enters this
+  system. `discovery` is. Hardening effort belongs at the boundary.
+
+Capability tradeoff for the above, stated explicitly: `discovery` keeps
+`cap_drop: ["ALL"]` and adds back exactly `NET_ADMIN` (to load the ruleset)
+plus `SETUID`/`SETGID` (to drop privileges afterwards — a uid-0 process with
+no `CAP_SETUID` cannot call `setresuid` at all). `app` gets none of them.
+Alternatives that avoid uid 0 entirely were tried and rejected: file
+capabilities on `nft` are inert under `no-new-privileges:true` (that is
+precisely what `NO_NEW_PRIVS` does), and a separate `NET_ADMIN` sidecar
+sharing the network namespace re-introduces a start-order race in which the
+workload can run before the rules land, and loses them silently on any
+restart — i.e. it fails *open*. Everything else about the hardening is
+retained: read-only root filesystem, no published ports, no Docker socket,
+no secret mounts, `pids_limit`, `mem_limit`, separate network.
+
+Network separation is unchanged and still enforced by construction: nothing
+in `app_net` is reachable from `discovery_net` because they are separate
+Docker networks with no shared network and no explicit link between them.
+
+Verified for real by `tests/security/test_discovery_egress_filter.py`, which
+reads the nftables rules' own packet counters live out of the running
+kernel (so a blocked probe cannot "pass" merely by timing out against
+something that was never routable) and pairs every negative with a live TCP
+connection to `1.1.1.1:443` and a real DNS resolution as positive controls.
 
 ### 4. Discovery worker verification entrypoint (`scripts/run_discovery_worker.py`)
 
@@ -242,16 +294,38 @@ already-elsewhere-assigned gap this task does not solve.
 T17b built `run_daily_entrypoint`/`scripts/run_daily_entrypoint.py` and
 explicitly left "the container's cron/systemd configuration" to T18. The
 `app` image installs a minimal cron daemon and a crontab entry invoking
-`scripts/run_daily_entrypoint.py --config /secrets/app.toml --database
+`scripts/run_daily_entrypoint.py --config /conf/app.toml --database
 /data/app.db` every minute (matching T17b's documented "every 1-2 minutes"
 target). Cron runs as `appuser`, not root, inside the container (this is
 why the base image needs a cron package that supports non-root operation —
 `cron`/`supercronic`; `supercronic` is preferred, it's a single static Go
 binary designed exactly for this container use case and needs no root
-daemon setup). Verified with a real test: start the `app` container with a
-fake local Telegram-shaped HTTP server as `api_base`, wait past a full
-minute boundary, confirm the entrypoint actually fired (fake server
-received a request) without any test-side invocation.
+daemon setup).
+
+**Corrections after the whole-branch review (2026-08-25).** Two things in
+this section as originally written:
+
+1. `--config /secrets/app.toml` was unloadable — see the Egress/config note
+   in component 3 and finding C2. The config file now lives on its own
+   read-only bind mount at `/conf`, distinct from `${SECRET_ROOT}`, via
+   `${APP_CONFIG_DIR}` in `docker-compose.yml`.
+2. The "fake Telegram-shaped HTTP server as `api_base`" test cannot fire
+   outside a genuine 07:00-07:05 Pacific window: `run_daily_entrypoint`
+   classifies the `DAILY_SEND` trigger first and returns `None` — touching
+   neither network nor database — at every other minute of the day, by
+   design. Making a fake server receive anything would require patching
+   `scheduling.py`'s trigger time, which T17b already recorded as not
+   acceptable evidence in this project. What
+   `tests/integration/test_cron_daily_send_trigger.py` now proves for real
+   instead: the `app` container is brought up with a real secret mount and
+   a real `/conf/app.toml`, a real wall-clock minute boundary passes, and
+   supercronic's own log shows the literal crontab command ran to
+   completion with exit status 0 and printed the entrypoint's own "not due,
+   skipped" line — i.e. cron fired and `load_settings()` succeeded against
+   the crontab's real `--config` path. A configuration failure surfaces
+   there as `job failed` plus a `ConfigurationError`, which the test
+   asserts against. The real 07:00 Pacific firing remains the owner-run
+   live-verification item recorded in `docs/task-logs/T18.md`.
 
 ### 6. Reboot/restart state test
 
@@ -291,9 +365,14 @@ test with a planted fake secret file baked into a layer.
 Infra-as-code, not applied to a live host this session:
 
 - `infra/firewall/rules.nft` — an nftables ruleset: default-deny inbound,
-  allow only UDP/51820 (WireGuard) plus established/related, allow all
-  outbound (egress is controlled per-container by Docker/iptables rules
-  from component 3, not by the host firewall).
+  allow only UDP/51820 (WireGuard), traffic arriving *inside* the tunnel
+  (`iifname "wg0" accept` — added after whole-branch review finding C3,
+  which found that without it the ruleset drops the owner's own SSH over
+  the VPN and locks them out of a fresh VPS on first apply), loopback,
+  ICMP, and established/related; allow all outbound (host-level egress is
+  unrestricted — the only container egress restriction that exists is
+  `infra/firewall/discovery_egress.nft`, applied inside the `discovery`
+  container's own network namespace per component 3).
 - `infra/wireguard/wg0.conf.template` — a WireGuard server config template
   with placeholder keys (never real keys committed) and instructions for
   generating real ones on the actual VPS.
