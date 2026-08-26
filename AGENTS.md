@@ -693,3 +693,25 @@ Telegram infrastructure or a live wall-clock window from an unattended
 sandbox). **T18's mandatory independent whole-branch security review and PR
 are still pending**, handled separately from this task. Full detail, including
 every command's real output: `docs/task-logs/T18.md`.
+
+**Update (2026-08-26): T18 is complete and merged (PR #35, commit
+`b3cca363dc8d47b3454c922b6ed77b015d1403d2`).** The mandatory independent
+whole-branch review found 3 Critical and 9 Important cross-task gaps: the
+three Critical ones were discovery having no network-level egress
+restriction to private address space, the production cron command being
+unable to load its own config, and the firewall ruleset's missing
+WireGuard-tunnel accept rule that would have locked the owner out of a fresh
+VPS -- all twelve findings were fixed in one bundled fix wave and re-reviewed
+clean. The first real CI run on GitHub Actions then found 4 more genuine
+Linux-only bugs invisible on this project's Windows dev sandbox: a
+`.dockerignore` regression that broke T06's and T07's own pre-existing CI
+jobs, a test-fixture secret-file permission gap, a bind-mounted secret
+directory unreadable by the container's non-root user because of a uid
+mismatch pytest's tmp dirs don't survive a bind mount, and GitHub's runner
+enforcing an AppArmor profile that blocks a `mount()` syscall one test issues
+-- all fixed and re-verified until CI ran fully green. The real exact-STOP
+live-verification test also passed for real (`docs/task-logs/T18.md`'s Live
+verification section). One item remains open -- the real 07:00-07:05 Pacific
+`DAILY_SEND` cron firing, owner-only, not doable from a sandbox. **Actual next
+step: T19 (audit, alerts, backups, and recovery)**, next per the backlog
+order above. T19 depends on T03, T12, and T18 -- all complete.
