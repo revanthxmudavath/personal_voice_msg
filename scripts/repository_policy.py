@@ -5,8 +5,10 @@ import ast
 import re
 import subprocess
 import sys
-from collections.abc import Iterable
+import tarfile
+from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import IO, cast
 
 import yaml
 
@@ -202,23 +204,43 @@ def check_lockfile(root: Path) -> list[str]:
     return [f"lockfile stale: {detail}"]
 
 
+def _is_documented_example(filename: str) -> bool:
+    return filename.endswith(".example") or any(
+        filename.endswith(f".example{suffix}") for suffix in DOCUMENTATION_SUFFIXES
+    )
+
+
+def _is_sensitive_filename(filename: str, suffix: str) -> bool:
+    return (
+        filename in SENSITIVE_ARTIFACT_NAMES
+        or suffix in SENSITIVE_ARTIFACT_SUFFIXES
+        or ("waha" in filename and "token" in filename)
+        or ("waha" in filename and "session" in filename)
+        or ("telegram" in filename and "token" in filename)
+        or ("gemini" in filename and ("key" in filename or "token" in filename))
+        or ("sender" in filename and "key" in filename)
+    )
+
+
+def _scan_content_for_secrets(content: str, label: str) -> list[str]:
+    violations: list[str] = []
+    if GITHUB_TOKEN.search(content):
+        violations.append(f"credential detected: {label}")
+    if GEMINI_API_KEY.search(content):
+        violations.append(f"credential detected: {label}")
+    if TELEGRAM_BOT_TOKEN.search(content):
+        violations.append(f"credential detected: {label}")
+    if PRIVATE_KEY.search(content):
+        violations.append(f"private key detected: {label}")
+    return violations
+
+
 def check_secrets(root: Path) -> list[str]:
     violations: list[str] = []
     for path in repository_files(root):
         filename = path.name.casefold()
-        documented_example = filename.endswith(".example") or any(
-            filename.endswith(f".example{suffix}")
-            for suffix in DOCUMENTATION_SUFFIXES
-        )
-        sensitive_filename = (
-            filename in SENSITIVE_ARTIFACT_NAMES
-            or path.suffix.casefold() in SENSITIVE_ARTIFACT_SUFFIXES
-            or ("waha" in filename and "token" in filename)
-            or ("waha" in filename and "session" in filename)
-            or ("telegram" in filename and "token" in filename)
-            or ("gemini" in filename and ("key" in filename or "token" in filename))
-            or ("sender" in filename and "key" in filename)
-        )
+        documented_example = _is_documented_example(filename)
+        sensitive_filename = _is_sensitive_filename(filename, path.suffix.casefold())
         if sensitive_filename and not documented_example:
             violations.append(
                 f"sensitive artifact detected: {display_path(path, root)}"
@@ -266,6 +288,158 @@ def check_secrets(root: Path) -> list[str]:
             violations.append(
                 f"private key detected: {display_path(path, root)}"
             )
+    return violations
+
+
+def check_git_history(root: Path) -> list[str]:
+    violations: list[str] = []
+    listing = subprocess.run(
+        ["git", "-C", str(root), "rev-list", "--all", "--objects"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    for line in listing.stdout.splitlines():
+        parts = line.split(" ", 1)
+        if len(parts) != 2:
+            continue
+        blob_sha, path_in_history = parts
+        filename = Path(path_in_history).name.casefold()
+        documented_example = _is_documented_example(filename)
+        sensitive_filename = _is_sensitive_filename(
+            filename, Path(path_in_history).suffix.casefold()
+        )
+        if sensitive_filename and not documented_example:
+            violations.append(
+                f"sensitive artifact detected in history: "
+                f"{path_in_history}@{blob_sha[:12]}"
+            )
+            continue
+        content = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "-p", blob_sha],
+            capture_output=True,
+            text=True,
+            errors="ignore",
+            check=False,
+        ).stdout
+        violations.extend(
+            v.replace(path_in_history, f"{path_in_history}@{blob_sha[:12]}")
+            for v in _scan_content_for_secrets(content, path_in_history)
+        )
+    return violations
+
+
+# Chunked reads, with an overlap carried between chunks so a credential
+# straddling a chunk boundary is still matched. 512 bytes is far longer than
+# the longest pattern any detector looks for (a GitHub token is 40 characters
+# after its prefix; the private-key header is ~40).
+_IMAGE_CHUNK_BYTES = 1 << 20
+_IMAGE_OVERLAP_BYTES = 512
+
+
+def _scan_stream_for_secrets(stream: IO[bytes], label: str) -> list[str]:
+    carry = ""
+    first = True
+    while True:
+        block = stream.read(_IMAGE_CHUNK_BYTES)
+        if not block:
+            return []
+        if first:
+            first = False
+            # Compiled ELF objects are skipped for CONTENT scanning only --
+            # their filenames are still checked by the caller. This is not
+            # convenience: run against this project's real image, the
+            # content scan flagged four Debian-provided crypto libraries
+            # (libgio, libgnutls, libmbedcrypto, libssh) as "private key
+            # detected". They genuinely do carry PEM text in .rodata --
+            # libssh keeps the `-----BEGIN ... PRIVATE KEY-----` header
+            # strings it parses, and libgnutls embeds complete PEM test
+            # vectors -- so no amount of tightening the regex (e.g.
+            # requiring a base64 body) distinguishes them. What actually
+            # distinguishes them is that they are compiled artifacts from
+            # the pinned base image and pinned apt packages, not anything
+            # this repository produces or could leak a credential into. A
+            # real leak of this project's credentials lands in a text file
+            # (a config, an env file, a key file, a layer's COPY), never
+            # inside a linker-produced ELF. Skipping ELF is narrower and
+            # more honest than allowlisting four version-numbered paths
+            # that change on every base-image bump.
+            if block.startswith(b"\x7fELF"):
+                return []
+        text = carry + block.decode("utf-8", errors="ignore")
+        violations = _scan_content_for_secrets(text, label)
+        if violations:
+            return violations
+        carry = text[-_IMAGE_OVERLAP_BYTES:]
+
+
+def check_image_secrets(image: str) -> list[str]:
+    violations: list[str] = []
+    container = subprocess.run(
+        ["docker", "create", image],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    try:
+        # Streamed, not buffered. `subprocess.run(..., capture_output=True)`
+        # plus `io.BytesIO` held the entire exported filesystem in memory,
+        # which works for the small synthetic images this function's own
+        # tests build and dies on a real one: this project's own image is
+        # 5.6 GB (the venv carries pocket-tts and its torch dependency), and
+        # the buffered version raised `MemoryError` against it. That is the
+        # concrete reason T18's whole-branch review finding I6 -- "this
+        # check is never actually run against this project's own image" --
+        # mattered: nothing had ever fed it a realistic input.
+        process = subprocess.Popen(  # noqa: S603
+            ["docker", "export", container], stdout=subprocess.PIPE,
+        )
+        assert process.stdout is not None
+        with tarfile.open(fileobj=process.stdout, mode="r|*") as archive:
+            for member in archive:
+                # Regular files and hard links both need their *name*
+                # checked. Docker image layers are full of hard links: a
+                # base image can hard-link a sensitively-named path
+                # (`/id_rsa`) to a regular file already present under a
+                # different name, and the alias's own `member.name` must
+                # still be flagged, not just the target's. Symlinks are
+                # skipped: some point at absolute paths with no member of
+                # their own in the archive (e.g. /etc/mtab -> /proc/mounts).
+                # Directories and device/fifo entries carry no content.
+                if not (member.isfile() or member.islnk()):
+                    continue
+                label = member.name
+                filename = Path(label).name.casefold()
+                documented_example = _is_documented_example(filename)
+                sensitive_filename = _is_sensitive_filename(
+                    filename, Path(label).suffix.casefold()
+                )
+                if sensitive_filename and not documented_example:
+                    violations.append(
+                        f"sensitive artifact detected in image: {label}"
+                    )
+                    continue
+                # Content is read only for regular files. In the streaming
+                # mode this now uses, `extractfile()` on a hard link raises
+                # StreamError (it would need to seek backwards to the
+                # target). That loses nothing: a hard link's content is
+                # byte-identical to its target's, and the target is itself
+                # a regular member of the same archive, scanned in its own
+                # right. Only the name check above is alias-specific, and
+                # that still runs for hard links.
+                if not member.isfile():
+                    continue
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    continue
+                violations.extend(_scan_stream_for_secrets(extracted, label))
+        process.stdout.close()
+        if process.wait() != 0:
+            raise subprocess.CalledProcessError(
+                process.returncode, ["docker", "export", container]
+            )
+    finally:
+        subprocess.run(["docker", "rm", "-f", container], capture_output=True)
     return violations
 
 
@@ -359,21 +533,44 @@ CHECKS = {
     "lockfile": check_lockfile,
     "secrets": check_secrets,
     "workflow": check_workflows,
+    "git-history": check_git_history,
+    "image": check_image_secrets,
 }
+# "image" scans a built Docker image tag rather than a repository root, so it
+# cannot run as part of "all" (there is no default image to scan) and is
+# dispatched with --image instead of --root in main().
+IMAGE_CHECKS = {"image"}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate repository policy")
     parser.add_argument("check", choices=[*CHECKS, "all"])
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument(
+        "--image", default=None, help="image tag to scan (required for 'image')"
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     root = args.root.resolve()
-    checks = CHECKS.values() if args.check == "all" else (CHECKS[args.check],)
-    violations = [violation for check in checks for violation in check(root)]
+    names = (
+        [name for name in CHECKS if name not in IMAGE_CHECKS]
+        if args.check == "all"
+        else [args.check]
+    )
+    violations: list[str] = []
+    for name in names:
+        if name in IMAGE_CHECKS:
+            if not args.image:
+                print(f"--image is required for the '{name}' check", file=sys.stderr)
+                return 2
+            image_check = cast(Callable[[str], list[str]], CHECKS[name])
+            violations.extend(image_check(args.image))
+        else:
+            root_check = cast(Callable[[Path], list[str]], CHECKS[name])
+            violations.extend(root_check(root))
     if violations:
         print("\n".join(violations), file=sys.stderr)
         return 1

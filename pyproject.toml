@@ -34,6 +34,12 @@ markers = [
     "live: tests using changing public web sources",
     "security: hostile input and trust-boundary tests",
     "e2e: real model, voice, audio, WAHA, and WhatsApp delivery tests",
+    # Applied *in addition to* fast/integration/security, never instead of
+    # one: these build this project's own image and/or bring the compose
+    # stack up, take minutes, and need a working Docker daemon. CI runs
+    # them in a dedicated job rather than inside the quality job's budget
+    # (.github/workflows/ci.yml).
+    "docker: builds this project's image or brings the compose stack up",
 ]
 
 [tool.ruff]

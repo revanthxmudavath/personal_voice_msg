@@ -1,0 +1,16 @@
+# Force LF line endings for all text files, on every platform.
+#
+# This project's only real deployment target is Linux (a VPS, per
+# infra/RUNBOOK.md; CI also runs on ubuntu-latest exclusively, confirmed via
+# .github/workflows/*.yml). There is no file in this repo that has ever
+# needed CRLF. Without this file, a Windows checkout with the common
+# `core.autocrlf=true` default silently rewrites committed LF-only text
+# files to CRLF on disk -- harmless for most files, but fatal for files a
+# strict Linux parser reads byte-for-byte, discovered in T18 when
+# `infra/firewall/rules.nft` (nftables syntax has no tolerance for `\r`)
+# failed to load inside a real Linux container with "unexpected junk"
+# errors on every line, purely because of this checkout artifact. The same
+# risk applies to `scripts/crontab` (a cron table, another strict
+# line-oriented Linux config format) and any other Linux-container-consumed
+# script/config this project ships.
+* text=auto eol=lf

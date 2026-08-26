@@ -1,0 +1,68 @@
+# infra/firewall/rules.nft
+#
+# Applied on the real VPS per infra/RUNBOOK.md (step 4). No live VPS exists
+# for this project yet (confirmed by the owner at the start of T18; see
+# docs/superpowers/specs/2026-08-24-t18-cloud-container-hardening-design.md).
+# Verified locally -- not against a live VPS -- by
+# tests/security/test_firewall_rules.py, which loads this exact file via
+# `nft -f` inside a real throwaway Linux container (--cap-add NET_ADMIN)
+# and probes it from outside that container's network namespace.
+#
+# Policy: default-deny inbound, allow only established/related traffic,
+# loopback, ICMP, the WireGuard administration port (UDP/51820), and
+# traffic arriving *inside* the WireGuard tunnel (iifname "wg0").
+#
+# Container egress (accurate as of T18's whole-branch review; the previous
+# wording here claimed docker-compose.yml implemented egress allowlisting,
+# which it did not, anywhere): the only network-level egress restriction
+# that exists is `infra/firewall/discovery_egress.nft`, applied by
+# scripts/discovery_entrypoint.sh inside the `discovery` container's own
+# network namespace. It blocks discovery -- this project's untrusted-web-
+# content trust boundary -- from reaching RFC1918, link-local, and cloud
+# instance-metadata address space. `app` (Gemini + api.telegram.org) is
+# deliberately NOT hostname-allowlisted: both providers rotate public IPs,
+# so an IP allowlist resolved at compose-up time breaks legitimate traffic
+# at an arbitrary later moment, and `app` is not the untrusted-content
+# boundary anyway. Nothing about container egress is enforced by this
+# host-level ruleset. Forwarding is denied outright: this host does not
+# route traffic for other hosts.
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        ct state established,related accept
+        iif "lo" accept
+        # Traffic that already came *through* the tunnel. Without this rule
+        # the `policy drop` above silently swallows every administrative
+        # connection over the VPN -- including the SSH session the owner
+        # uses to administer the host -- even though UDP/51820 (the tunnel's
+        # own transport, matched below) is open. Found by T18's whole-branch
+        # review as a real self-lockout: the tunnel comes up, and then
+        # nothing inside it works.
+        #
+        # Deliberately broad (`iifname "wg0" accept`, not
+        # `iifname "wg0" tcp dport 22 accept`): the WireGuard peer list in
+        # infra/wireguard/wg0.conf.template is the authentication boundary
+        # here -- only holders of a listed public key can put a packet on
+        # wg0 at all -- and this host is a single-owner admin box whose
+        # future admin needs (a second SSH port, node_exporter, a debug
+        # tunnel) should not each require another firewall edit and another
+        # reboot-time lockout risk. Narrow this to port 22 only if the
+        # peer list ever grows beyond the owner's own devices.
+        #
+        # `iifname` (not `iif`): `iif` resolves the interface to a fixed
+        # index when the ruleset is LOADED, so it silently stops matching
+        # if wg0 is recreated (every `wg-quick down/up`, every reboot).
+        # `iifname` matches by name at packet time. `iif "lo"` above is
+        # left as-is: loopback exists before nftables loads and is never
+        # recreated.
+        iifname "wg0" accept comment "traffic inside the WireGuard tunnel"
+        udp dport 51820 accept comment "WireGuard administration endpoint"
+        ip protocol icmp accept
+    }
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}

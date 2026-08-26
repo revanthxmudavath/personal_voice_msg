@@ -1,0 +1,173 @@
+# Pinned so the compose project name (and therefore network names like
+# personal_voice_msg_discovery_net) is deterministic regardless of the
+# checkout directory name -- worktree checkouts under this repo use
+# directory names such as task+T18-cloud-container-hardening, which would
+# otherwise change Compose's default project name and break the network
+# name this file's own tests assert on.
+name: personal_voice_msg
+
+# Image digest re-resolved 2026-08-25 via the build path this file itself
+# uses (the previously recorded value went stale when Task 7's /data chown
+# changed the image, and again when the whole-branch review's C1 fix added
+# nftables + infra/firewall/ + the discovery entrypoint):
+#   SECRET_ROOT=... APP_CONFIG_DIR=... docker compose build
+#   docker inspect personal-voice-msg:t18 --format '{{.Id}}'
+# -> sha256:753e8da1c8e57be0e94210725b1503839a65367f1899f6cde57e1cfa72403e36
+# (reproducible across repeated builds *on the machine that resolved it*:
+# two consecutive `docker compose build` runs there produced the identical
+# .Id. Confirmed by the final-review re-review pass that this is NOT a
+# portable pin across machines/BuildKit versions/mirror snapshots -- a
+# different sandbox rebuilding the identical Dockerfile content resolved a
+# different, itself internally-reproducible .Id. Since no test asserts on
+# this literal string, that's a documentation-accuracy issue, not a
+# functional one; treat the value below as "what to expect on the machine
+# that recorded it," not a cross-machine content hash.)
+# Only `app` declares `build:` -- `discovery` below intentionally has none
+# and just references the tag `app`'s build produces. This is not
+# stylistic: when both services declared `build: .` against the same
+# `image: personal-voice-msg:t18`, `docker compose build` baked them as two
+# separate targets (Compose auto-labels each build with its owning service,
+# e.g. com.docker.compose.service=app vs =discovery, so the two configs
+# differ even though every Dockerfile layer is CACHED and identical), and
+# both targets raced to tag the one shared name -- confirmed empirically,
+# repeated `docker compose build` runs alternated the resolved `.Id`
+# between sha256:53d2d4cde462...05a9fb (app's target) and
+# sha256:5087c5c6a27b...33875c (discovery's target) -- both historical
+# values from that 2026-08-24 experiment, superseded by the pin above --
+# depending purely on
+# which target's "naming to ..." step finished last. Building only `app`
+# (`docker compose build app`, or the whole-file `docker compose build`
+# now that `discovery` has no build target of its own to race) reproduced
+# the single value above on every repeated run. Recorded as a comment
+# rather than embedded in the `image:` lines as
+# personal-voice-msg:t18@sha256:...: confirmed empirically that (a)
+# `docker tag`/BuildKit refuse to create a digest-qualified tag at all
+# ("refusing to create a tag with a digest reference") whenever `build:` is
+# present, and (b) even without `build:`, a purely local (never pushed to a
+# registry) image has no RepoDigests entry, so `docker run
+# personal-voice-msg:t18@sha256:<this id>` fails with "pull access denied"
+# even though the plain tag already exists locally -- there is no registry
+# in this project to push to and make the digest genuinely resolvable.
+# Embedding it would break this file's own `docker compose build && up`
+# test suite (tests/security/test_container_deployment.py). To requalify:
+# rebuild via `docker compose build` (not plain `docker build`, which
+# resolves to a different, also-stable value because it skips Compose's
+# bake path and its service labels entirely) + rerun
+# tests/security/test_container_image.py and this file's suite. Re-resolve
+# and update the `.Id` above on the machine doing the requalification --
+# don't expect it to match this recorded value if you're on different
+# hardware/Docker version than whoever last recorded it (see the note above).
+services:
+  app:
+    image: personal-voice-msg:t18
+    build: .
+    user: "10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    mem_limit: 8g
+    cpus: 4
+    networks: [app_net]
+    volumes:
+      - db_data:/data
+      # `:?` (Compose's required-variable syntax) rather than a bare
+      # ${SECRET_ROOT}: an unset variable resolves to the empty string,
+      # which Docker then resolves to the *current working directory* --
+      # i.e. `docker compose up` with SECRET_ROOT unset silently bind-mounts
+      # this entire repository checkout at /secrets instead of failing.
+      # Confirmed empirically via `docker compose config` before this fix.
+      - type: bind
+        source: ${SECRET_ROOT:?SECRET_ROOT must point at the deployment secret directory (see infra/RUNBOOK.md)}
+        target: /secrets
+        read_only: true
+      # The application's TOML config file lives on a SEPARATE mount from
+      # the secrets, and this is required, not stylistic: config.py's
+      # `secret_root()` rejects (for non-development profiles) any
+      # secret_root at or below the config file's own resolved "project
+      # root", and `_project_root()` falls back to the config file's own
+      # directory when no pyproject.toml/.git is found above it -- which is
+      # exactly the case inside this image. With app.toml under /secrets,
+      # secret_root="/secrets" fails closed with "deployed secret root must
+      # be outside the project directory". /conf + /secrets is the layout
+      # that actually loads; proved by
+      # tests/security/test_container_config_loads.py, which runs the
+      # literal scripts/crontab argument string inside the built image.
+      - type: bind
+        source: ${APP_CONFIG_DIR:?APP_CONFIG_DIR must point at the directory holding app.toml (see infra/RUNBOOK.md)}
+        target: /conf
+        read_only: true
+    # supercronic (installed by the Dockerfile) runs as PID 1 and fires
+    # scripts/crontab's daily-send entrypoint on its declared schedule.
+    command: ["supercronic", "/app/scripts/crontab"]
+    restart: unless-stopped
+
+  discovery:
+    image: personal-voice-msg:t18
+    # No `build:` here on purpose -- see the digest-pin comment above
+    # `services:`. `app`'s `build: .` is the single source of this image;
+    # `discovery` just runs the tag `app` produces, avoiding the two-target
+    # tag-write race that made the pinned digest non-reproducible.
+    # `user: "0"` here, unlike `app`'s `user: "10001"` -- and this is the
+    # one deliberate deviation from "every container runs as 10001 from
+    # PID 1". (It has to be stated explicitly: the Dockerfile ends with
+    # `USER appuser`, so simply omitting this key would start the
+    # entrypoint as 10001 and `nft -f` would fail with "netlink: Error:
+    # cache initialization failed: Operation not permitted" -- capabilities
+    # in the bounding set are useless to a non-root process.) The
+    # entrypoint below starts as uid 0 solely to load
+    # infra/firewall/discovery_egress.nft into this container's own network
+    # namespace (needs CAP_NET_ADMIN), then permanently drops to
+    # uid/gid 10001 with all capabilities cleared before exec'ing the
+    # workload. `docker compose exec` therefore defaults to root here; pass
+    # `--user 10001` when a probe needs to run as the workload identity.
+    # The running workload's real identity is asserted for real (uid 10001,
+    # CapEff 0, NoNewPrivs 1, read from /proc/1/status) by
+    # tests/security/test_discovery_egress_filter.py rather than inferred
+    # from this key.
+    user: "0"
+    entrypoint: ["/app/scripts/discovery_entrypoint.sh"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    # NET_ADMIN: load the egress ruleset. SETUID/SETGID: drop back to
+    # uid 10001 afterwards (a uid-0 process with no CAP_SETUID cannot call
+    # setresuid at all -- verified: "setpriv: setresuid failed: Operation
+    # not permitted"). Nothing else is added back, and `app` gets none of
+    # them. See scripts/discovery_entrypoint.sh for the rejected
+    # alternatives (file capabilities are inert under no-new-privileges;
+    # a NET_ADMIN sidecar fails open on a start-order race).
+    cap_add: ["NET_ADMIN", "SETUID", "SETGID"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 1g
+    cpus: 1
+    networks: [discovery_net]
+    # No `searxng` service exists in this file, and none is added by T18:
+    # like the weekly-discovery-pipeline gap noted above, "what SearXNG
+    # instance does production discovery search against" is a pre-existing
+    # open question this task does not solve (no self-hosted SearXNG has
+    # ever been deployed anywhere in this project's history; T07's own
+    # tests reach a real SearXNG only via a throwaway Docker test fixture,
+    # T07_NETWORK_HARNESS/SEARXNG_URL). The discovery container's job here
+    # is to exist as a correctly networked, correctly resource-bounded,
+    # correctly isolated container for T18's own hardening tests -- not to
+    # produce real discovery output. Once a real SearXNG target is decided,
+    # the owner runs the real verification harness manually:
+    # `docker compose exec discovery python scripts/run_discovery_worker.py
+    # --searxng-base-url <real-url> --budget-seconds 60` (documented in
+    # infra/RUNBOOK.md, Task 9).
+    command: ["sleep", "300"]
+    restart: "no"
+
+networks:
+  app_net:
+    enable_ipv6: false
+  discovery_net:
+    enable_ipv6: false
+
+volumes:
+  db_data:

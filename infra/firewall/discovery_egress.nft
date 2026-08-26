@@ -1,0 +1,76 @@
+# infra/firewall/discovery_egress.nft
+#
+# Network-level egress restriction for the `discovery` container ONLY
+# (docker-compose.yml's `discovery` service). Loaded by
+# scripts/discovery_entrypoint.sh with `nft -f` inside the container's own
+# network namespace, before the discovery workload process is started --
+# see that script and docker-compose.yml's `discovery` service for the
+# mechanism and the capability tradeoff.
+#
+# Why discovery and not app: discovery is this project's actual untrusted-
+# content trust boundary (it fetches and parses arbitrary web pages and
+# search results; AGENTS.md "web content ... is untrusted data"). `app`
+# talks only to two pinned, owner-chosen SaaS endpoints (Gemini,
+# api.telegram.org) and holds the secrets; hostname-based egress
+# allowlisting for those was deliberately NOT implemented -- both rotate
+# their public IPs, so an IP allowlist resolved at compose-up time fails
+# closed at an arbitrary later moment for a legitimate reason, which is a
+# reliability hazard with no matching security gain.
+#
+# This is *defense in depth* alongside, not a replacement for,
+# discovery/web.py's application-layer `is_public_address()` check (which
+# rejects private/loopback/link-local/NAT64 addresses at DNS-resolution
+# and socket-connect time). That check protects the one HTTP client that
+# uses it; this ruleset protects the whole container, including any code
+# path that ever bypasses `DiscoveryWebSession`.
+#
+# What is deliberately still allowed:
+#   - 127.0.0.0/8 -- Docker's embedded DNS resolver lives at 127.0.0.11
+#     inside every user-defined-network container (confirmed empirically:
+#     Docker installs its own `ip nat` DNAT rules for it in the container's
+#     netns). Blocking loopback would break all name resolution.
+#   - Everything else not listed below, i.e. the public internet reached
+#     via the container's default route. Note the default route's next hop
+#     IS the docker bridge gateway (a 172.16/12 address), but netfilter
+#     matches the layer-3 *destination*, not the next hop, so public
+#     traffic is unaffected -- only packets actually addressed to a
+#     private/link-local host are dropped. Verified for real by
+#     tests/security/test_discovery_egress_filter.py's positive control.
+#
+# `counter` on every drop rule is load-bearing, not decoration: it is what
+# lets the test prove the kernel actually matched and dropped the probe
+# packets, instead of the probe merely timing out because nothing answered
+# (the "test that cannot fail" class of bug this branch fixed repeatedly).
+#
+# `drop` (silent) rather than `reject`: verified empirically that a
+# netfilter-generated RST / ICMP admin-prohibited from the *output* hook is
+# not delivered back to the local socket on this platform (the probe times
+# out either way), so `reject` buys no better error signature and only
+# leaks the existence of the filter. The counter provides the specific
+# signature instead.
+#
+# If a private-network SearXNG (or any other private-range dependency) is
+# ever deployed for discovery, add an explicit `accept` for that exact host
+# ABOVE the drop rules and re-run tests/security/test_discovery_egress_filter.py.
+table inet discovery_egress {
+    chain output {
+        type filter hook output priority filter; policy accept;
+
+        ip daddr 127.0.0.0/8 accept comment "loopback incl. Docker embedded DNS 127.0.0.11"
+        ip6 daddr ::1 accept comment "IPv6 loopback"
+
+        ip daddr 169.254.169.254 counter drop comment "cloud instance metadata service"
+        ip daddr 169.254.0.0/16 counter drop comment "IPv4 link-local"
+        ip daddr 10.0.0.0/8 counter drop comment "RFC1918 10/8"
+        ip daddr 172.16.0.0/12 counter drop comment "RFC1918 172.16/12 (incl. this container's own Docker gateway)"
+        ip daddr 192.168.0.0/16 counter drop comment "RFC1918 192.168/16"
+
+        # IPv6 is disabled on discovery_net (docker-compose.yml), so these
+        # cannot match today. They exist so re-enabling IPv6 later does not
+        # silently open the same holes IPv4 has closed here.
+        ip6 daddr fc00::/7 counter drop comment "IPv6 unique-local"
+        ip6 daddr fe80::/10 counter drop comment "IPv6 link-local"
+        ip6 daddr 64:ff9b::/96 counter drop comment "well-known NAT64 prefix"
+        ip6 daddr 64:ff9b:1::/48 counter drop comment "local-use NAT64 prefix"
+    }
+}

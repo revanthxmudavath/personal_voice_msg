@@ -56,7 +56,8 @@ def create_configuration(
     embedding_data = "consented-test-voice-embedding"
     sender_auth_key = "sender-auth-" + "integration-key"
 
-    (secret_root / "telegram_chat_id.json").write_text(
+    chat_id_path = secret_root / "telegram_chat_id.json"
+    chat_id_path.write_text(
         json.dumps(
             {
                 "profile": recipient_profile or profile,
@@ -65,11 +66,25 @@ def create_configuration(
         ),
         encoding="utf-8",
     )
-    (secret_root / "telegram-token.txt").write_text(f"{token}\n", encoding="utf-8")
-    (secret_root / "voice.embedding").write_bytes(embedding_data.encode())
-    (secret_root / "sender-auth-key.txt").write_text(
+    if profile != "development":
+        chat_id_path.chmod(0o600)
+
+    token_path = secret_root / "telegram-token.txt"
+    token_path.write_text(f"{token}\n", encoding="utf-8")
+    if profile != "development":
+        token_path.chmod(0o600)
+
+    embedding_path = secret_root / "voice.embedding"
+    embedding_path.write_bytes(embedding_data.encode())
+    if profile != "development":
+        embedding_path.chmod(0o600)
+
+    key_path = secret_root / "sender-auth-key.txt"
+    key_path.write_text(
         f"{sender_auth_key}\n", encoding="utf-8"
     )
+    if profile != "development":
+        key_path.chmod(0o600)
 
     values = {
         "profile": profile,

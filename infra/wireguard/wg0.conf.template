@@ -1,0 +1,19 @@
+# infra/wireguard/wg0.conf.template
+#
+# Real keys are generated on the VPS itself and on each administrator's own
+# device (`wg genkey | tee privatekey | wg pubkey > publickey`) -- never
+# commit real keys. Copy this file to /etc/wireguard/wg0.conf on the VPS
+# and fill in the placeholders below with real, freshly generated values
+# (see infra/RUNBOOK.md step 3). The placeholders here are illustrative
+# only and must never be used as real key material.
+[Interface]
+Address = 10.66.66.1/24
+ListenPort = 51820
+PrivateKey = <REPLACE_WITH_REAL_SERVER_PRIVATE_KEY_GENERATED_ON_THE_VPS>
+
+[Peer]
+# One [Peer] block per administrator device. Duplicate this block (with a
+# distinct PublicKey and a distinct /32 AllowedIPs address inside
+# 10.66.66.0/24) for each additional admin device.
+PublicKey = <REPLACE_WITH_REAL_PEER_PUBLIC_KEY>
+AllowedIPs = 10.66.66.2/32
